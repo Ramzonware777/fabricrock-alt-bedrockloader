@@ -72,14 +72,33 @@ class EntityDataDriven(
     )
 
     companion object {
+        private fun extractFloatValue(raw: Any?): Float? {
+            return when (raw) {
+                is Number -> raw.toFloat()
+                is String -> raw.toFloatOrNull()
+                is Map<*, *> -> {
+                    val node = raw["value"] ?: raw["default"] ?: raw["max"] ?: raw["range_max"] ?: raw["range_min"] ?: raw["min"]
+                    when (node) {
+                        is Number -> node.toFloat()
+                        is String -> node.toFloatOrNull()
+                        else -> null
+                    }
+                }
+                else -> null
+            }
+        }
+
         fun buildEntityType(identifier: Identifier): EntityType<EntityDataDriven> {
             val spawnGroup = BedrockAddonsRegistry.entitySpawnGroups[identifier] ?: SpawnGroup.CREATURE
+            val components = BedrockAddonsRegistry.entityComponents[identifier]
+            val width = extractFloatValue(components?.minecraftCollisionBox?.width)?.coerceAtLeast(0.0f) ?: 1.0f
+            val height = extractFloatValue(components?.minecraftCollisionBox?.height)?.coerceAtLeast(0.0f) ?: 1.0f
             return EntityType.Builder.create({ type, world ->
                 val components = BedrockAddonsRegistry.entityComponents[identifier]
                     ?: throw IllegalStateException("[EntityDataDriven] Entity $identifier has no components")
                 EntityDataDriven(identifier, components, type, world)
             }, spawnGroup)
-                .dimensions(1f, 1f)
+                .dimensions(width, height)
                 .build(identifier.toString())
         }
 
@@ -93,9 +112,9 @@ class EntityDataDriven(
             val builder = createMobAttributes()
             builder.add(EntityAttributes.GENERIC_ATTACK_DAMAGE, resolveAttackDamage(components) ?: 2.0)
 
-            components.minecraftHealth?.max?.let { value ->
+            extractFloatValue(components.minecraftHealth?.max)?.let { value ->
                 builder.add(EntityAttributes.GENERIC_MAX_HEALTH, value.toDouble())
-            } ?: components.minecraftHealth?.value?.let { value ->
+            } ?: extractFloatValue(components.minecraftHealth?.value)?.let { value ->
                 builder.add(EntityAttributes.GENERIC_MAX_HEALTH, value.toDouble())
             }
             components.minecraftKnockbackResistance?.value?.let { value ->
@@ -269,7 +288,8 @@ class EntityDataDriven(
     }
 
     private fun applyRuntimeAttributesFromComponents() {
-        val maxHealth = activeComponents.minecraftHealth?.max ?: activeComponents.minecraftHealth?.value
+        val maxHealth = extractComponentFloatValue(activeComponents.minecraftHealth?.max)
+            ?: extractComponentFloatValue(activeComponents.minecraftHealth?.value)
         maxHealth?.let { value ->
             getAttributeInstance(EntityAttributes.GENERIC_MAX_HEALTH)?.baseValue = value.toDouble()
             if (health > value) health = value
@@ -592,6 +612,22 @@ class EntityDataDriven(
         }
     }
 
+    private fun extractComponentFloatValue(raw: Any?): Float? {
+        return when (raw) {
+            is Number -> raw.toFloat()
+            is String -> raw.toFloatOrNull()
+            is Map<*, *> -> {
+                val map = toStringAnyMap(raw) ?: return null
+                when (val valueNode = map["value"] ?: map["default"] ?: map["max"] ?: map["range_max"] ?: map["range_min"] ?: map["min"]) {
+                    is Number -> valueNode.toFloat()
+                    is String -> valueNode.toFloatOrNull()
+                    else -> null
+                }
+            }
+            else -> null
+        }
+    }
+
     private fun hasComponent(componentId: String): Boolean {
         val normalized = componentId.lowercase()
         return when (normalized) {
@@ -685,7 +721,7 @@ class EntityDataDriven(
     }
 
     override fun damage(source: DamageSource, amount: Float): Boolean {
-        return activeComponents.minecraftHealth?.min?.let {
+        return extractComponentFloatValue(activeComponents.minecraftHealth?.min)?.let {
             when {
                 health - amount > 1 && !source.isOf(DamageTypes.OUT_OF_WORLD) -> super.damage(source, amount)
                 else -> {
