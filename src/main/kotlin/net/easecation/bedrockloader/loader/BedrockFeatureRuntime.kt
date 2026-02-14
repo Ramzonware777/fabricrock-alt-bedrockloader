@@ -301,7 +301,7 @@ object BedrockFeatureRuntime {
             return false
         }
 
-        val command = "place structure ${rule.structureId} $x $y $z"
+        val command = "place template ${rule.structureId} $x $y $z"
         val source = world.server.commandSource
             .withWorld(world)
             .withPosition(Vec3d(x + 0.5, y.toDouble(), z + 0.5))
