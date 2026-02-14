@@ -38,10 +38,13 @@ class BedrockResourceContext {
             BedrockLoader.logger.warn("[BedrockResourcePackLoader] Block texture not found: $textureKey")
             return null
         }
-        return Identifier.of(
-            namespace,
-            "block/${texture.substringAfterLast("/")}"
-        )
+        val normalized = normalizeTextureLeaf(texture)
+        return Identifier.tryParse("$namespace:block/$normalized")
+            ?: Identifier.tryParse("minecraft:block/$normalized")
+            ?: run {
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Invalid terrain texture path: $texture")
+                null
+            }
     }
 
     fun itemTextureToJava(namespace: String, textureKey: String): JavaTexturePath? {
@@ -51,9 +54,22 @@ class BedrockResourceContext {
             BedrockLoader.logger.warn("[BedrockResourcePackLoader] Item texture not found: $textureKey")
             return null
         }
-        return Identifier.of(
-            namespace,
-            "item/${texture.substringAfterLast("/")}"
-        )
+        val normalized = normalizeTextureLeaf(texture)
+        return Identifier.tryParse("$namespace:item/$normalized")
+            ?: Identifier.tryParse("minecraft:item/$normalized")
+            ?: run {
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Invalid item texture path: $texture")
+                null
+            }
+    }
+
+    private fun normalizeTextureLeaf(texturePath: String): String {
+        val leaf = texturePath
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .substringBeforeLast('.', missingDelimiterValue = texturePath.substringAfterLast('/').substringAfterLast('\\'))
+            .lowercase()
+        val sanitized = leaf.replace(Regex("[^a-z0-9._-]"), "_")
+        return sanitized.trim('_').ifBlank { "missing" }
     }
 }

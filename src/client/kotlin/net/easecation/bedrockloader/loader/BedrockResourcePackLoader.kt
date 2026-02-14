@@ -884,9 +884,12 @@ class BedrockResourcePackLoader(
         }
 
         // Use block atlas path (block/entity_xxx) to match how textures are packed in createEntityTextures.
+        val normalizedTextureName = normalizeTextureLeaf(texture)
+        val textureId = Identifier.tryParse("${identifier.namespace}:block/entity_$normalizedTextureName")
+            ?: MissingSprite.getMissingSpriteId()
         val spriteId = SpriteIdentifier(
             VersionCompat.BLOCK_ATLAS_TEXTURE,
-            Identifier.of(identifier.namespace, "block/entity_" + texture.substringAfterLast("/"))
+            textureId
         )
         val materials = mapOf("*" to BedrockMaterialInstance(spriteId))
         val model = geometryFactory.create(materials)
@@ -1095,13 +1098,23 @@ class BedrockResourcePackLoader(
             // ä¿å­˜åˆ° textures/block/ ç›®å½•ï¼Œä½¿ç”¨ entity_ å‰ç¼€é¿å…å†²çª
             // è¿™æ ·çº¹ç†æ‰èƒ½è¢« BLOCK_ATLAS æ­£ç¡®åŠ è½½ï¼ˆç”¨äºŽ inventory æ¸²æŸ“ï¼‰
             // ç»Ÿä¸€è½¬æ¢ä¸ºPNGæ ¼å¼ï¼ˆMinecraftåŽŸç”Ÿçº¹ç†ç³»ç»Ÿåªæ”¯æŒPNGï¼‰
-            val fileName = "entity_" + texture.substringAfterLast("/")
+            val fileName = "entity_" + normalizeTextureLeaf(texture)
             val file = namespaceDir.resolve("textures/block/$fileName.png")
             file.parentFile.mkdirs()
             bedrockTexture.image.let { image ->
                 ImageIO.write(image, "png", file)
             }
         }
+    }
+
+    private fun normalizeTextureLeaf(texturePath: String): String {
+        val leaf = texturePath
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .substringBeforeLast('.', missingDelimiterValue = texturePath.substringAfterLast('/').substringAfterLast('\\'))
+            .lowercase()
+        val sanitized = leaf.replace(Regex("[^a-z0-9._-]"), "_")
+        return sanitized.trim('_').ifBlank { "missing" }
     }
 
     /**
