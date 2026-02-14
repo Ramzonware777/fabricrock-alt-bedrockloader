@@ -42,6 +42,7 @@ class BedrockBehaviorPackLoader(
         context.packs.forEach { packContext ->
             loadPackContent(packContext)
         }
+        BedrockFeatureRuntime.initialize(context)
         BedrockFunctionRuntime.initialize(context)
     }
 
@@ -303,7 +304,13 @@ class BedrockBehaviorPackLoader(
         if (raw.isNullOrBlank()) return null
         val normalized = raw.substringBefore('<').trim()
         if (normalized.isBlank()) return null
-        return runCatching { Identifier.of(normalized) }.getOrNull()
+        runCatching { Identifier.of(normalized) }.getOrNull()?.let { return it }
+
+        val lowerPath = normalized.substringAfter(':', normalized).lowercase()
+        val candidates = Registries.ENTITY_TYPE.ids.filter {
+            it.path.lowercase() == lowerPath || it.path.lowercase().startsWith(lowerPath)
+        }
+        return if (candidates.size == 1) candidates.first() else null
     }
 
     private fun registerSpawnRestrictions(
@@ -320,15 +327,7 @@ class BedrockBehaviorPackLoader(
             matchesAnySpawnCondition(world, pos, spawnRules.conditions)
         }
 
-        val registerMethod = runCatching {
-            SpawnRestriction::class.java.getDeclaredMethod(
-                "register",
-                EntityType::class.java,
-                net.minecraft.entity.SpawnLocation::class.java,
-                Heightmap.Type::class.java,
-                SpawnRestriction.SpawnPredicate::class.java
-            ).apply { isAccessible = true }
-        }.getOrElse {
+        val registerMethod = findSpawnRestrictionRegisterMethod().getOrElse {
             BedrockLoader.logger.warn("[SpawnRules] Unable to access SpawnRestriction.register for $entityId: ${it.message}")
             return
         }
@@ -339,6 +338,29 @@ class BedrockBehaviorPackLoader(
             BedrockLoader.logger.warn("[SpawnRules] Failed to register spawn predicate for $entityId: ${it.message}")
         }.onSuccess {
             BedrockLoader.logger.info("[SpawnRules] Registered spawn predicate for $entityId")
+        }
+    }
+
+    private fun findSpawnRestrictionRegisterMethod(): Result<java.lang.reflect.Method> {
+        return runCatching {
+            val direct = runCatching {
+                SpawnRestriction::class.java.getDeclaredMethod(
+                    "register",
+                    EntityType::class.java,
+                    net.minecraft.entity.SpawnLocation::class.java,
+                    Heightmap.Type::class.java,
+                    SpawnRestriction.SpawnPredicate::class.java
+                )
+            }.getOrNull()
+
+            val fallback = SpawnRestriction::class.java.declaredMethods.firstOrNull { method ->
+                method.name == "register" &&
+                    method.parameterCount == 4 &&
+                    EntityType::class.java.isAssignableFrom(method.parameterTypes[0])
+            }
+
+            (direct ?: fallback ?: throw NoSuchMethodException("register(EntityType, SpawnLocation, Heightmap, SpawnPredicate)"))
+                .apply { isAccessible = true }
         }
     }
 

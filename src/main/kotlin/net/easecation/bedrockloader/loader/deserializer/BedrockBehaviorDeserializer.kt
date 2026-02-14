@@ -122,7 +122,24 @@ object BedrockBehaviorDeserializer : PackDeserializer<BedrockBehaviorContext> {
             // 移除前缀后的相对路径
             val relativeName = if (pathPrefix.isNotEmpty()) name.removePrefix(pathPrefix) else name
 
-            if (relativeName.startsWith("functions/") && relativeName.endsWith(".mcfunction")) {
+            if (relativeName.startsWith("structures/") && relativeName.endsWith(".mcstructure")) {
+                file.getInputStream(entry).use { stream ->
+                    try {
+                        val structurePath = relativeName
+                            .removePrefix("structures/")
+                            .removeSuffix(".mcstructure")
+                            .replace('\\', '/')
+                            .trim('/')
+                            .lowercase()
+                        if (structurePath.isBlank()) return@use
+                        val bytes = stream.readBytes()
+                        context.structures[structurePath] = bytes
+                        context.structures.putIfAbsent(structurePath.substringAfterLast('/'), bytes)
+                    } catch (e: Exception) {
+                        BedrockLoader.logger.error("Error parsing structure file: $name", e)
+                    }
+                }
+            } else if (relativeName.startsWith("functions/") && relativeName.endsWith(".mcfunction")) {
                 file.getInputStream(entry).use { stream ->
                     try {
                         val functionName = normalizeFunctionName(relativeName) ?: return@use
