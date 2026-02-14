@@ -7,6 +7,7 @@ import net.easecation.bedrockloader.block.entity.BlockEntityDataDriven
 import net.easecation.bedrockloader.loader.context.BedrockPackContext
 import net.easecation.bedrockloader.loader.error.LoadingError
 import net.easecation.bedrockloader.loader.error.LoadingErrorCollector
+import net.easecation.bedrockloader.util.normalizeIdentifier
 import net.easecation.bedrockloader.entity.EntityDataDriven
 import net.fabricmc.fabric.api.biome.v1.BiomeModifications
 import net.fabricmc.fabric.api.biome.v1.BiomeSelectors
@@ -172,6 +173,7 @@ class BedrockBehaviorPackLoader(
         }
 
         registerPackSpawnRules(packContext, packName)
+        registerPackFeatureData(packContext, packName)
     }
 
     private fun mapPopulationControlToSpawnGroup(populationControl: String?): SpawnGroup {
@@ -573,5 +575,62 @@ class BedrockBehaviorPackLoader(
             "monster" -> biomeId.namespace == "minecraft" && !path.contains("nether") && !path.contains("end")
             else -> path.contains(tag)
         }
+    }
+
+    private fun registerPackFeatureData(
+        packContext: net.easecation.bedrockloader.loader.context.SinglePackContext,
+        packName: String
+    ) {
+        if (packContext.behavior.structureTemplateFeatures.isNotEmpty()) {
+            packContext.behavior.structureTemplateFeatures.forEach { (id, feature) ->
+                BedrockAddonsRegistry.structureTemplateFeatures[id] = feature
+                BedrockLoader.logger.info(
+                    "[Features] Registered structure template feature $id from pack $packName (structure_name=${feature.structureName})"
+                )
+            }
+        }
+
+        if (packContext.behavior.featureRules.isNotEmpty()) {
+            packContext.behavior.featureRules.forEach { (ruleId, rule) ->
+                BedrockAddonsRegistry.featureRules[ruleId] = rule
+
+                val placesFeatureId = parseFeatureIdentifierSafe(rule.description?.placesFeature)
+                if (placesFeatureId != null) {
+                    val isCustomKnown = BedrockAddonsRegistry.structureTemplateFeatures.containsKey(placesFeatureId)
+                    val isVanilla = placesFeatureId.namespace == "minecraft"
+                    if (!isCustomKnown && !isVanilla) {
+                        BedrockLoader.logger.warn(
+                            "[Features] feature_rule $ruleId references unknown feature $placesFeatureId (pack=$packName)"
+                        )
+                    }
+                } else {
+                    BedrockLoader.logger.warn(
+                        "[Features] feature_rule $ruleId has invalid places_feature='${rule.description?.placesFeature}' (pack=$packName)"
+                    )
+                }
+
+                val placementPass = rule.conditions?.placementPass ?: "unknown"
+                BedrockLoader.logger.info(
+                    "[Features] Registered feature rule $ruleId (placement_pass=$placementPass, distribution=${rule.resolvedDistribution() != null})"
+                )
+            }
+        }
+    }
+
+    private fun parseFeatureIdentifierSafe(raw: String?): Identifier? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim()
+        val normalized = if (trimmed.contains(':')) trimmed else "minecraft:$trimmed"
+        return runCatching { Identifier.of(normalized.normalizeIdentifier()) }
+            .recoverCatching {
+                val namespace = normalized.substringBefore(':').lowercase()
+                val path = normalized.substringAfter(':')
+                    .lowercase()
+                    .replace(Regex("[^a-z0-9/._-]"), "_")
+                    .trim('_')
+                    .ifBlank { "unknown" }
+                Identifier.of(namespace, path)
+            }
+            .getOrNull()
     }
 }
