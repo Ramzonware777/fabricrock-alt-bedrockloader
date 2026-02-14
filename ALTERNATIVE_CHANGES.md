@@ -1,23 +1,23 @@
-﻿# FabricRock Alternative Build (hasta ahora)
+# FabricRock Alternative Build (Current Snapshot)
 
-Esta version alternativa incluye los cambios implementados durante esta sesion para mejorar compatibilidad de addons Bedrock en la rama 1.21.1.
+This alternative version includes the changes implemented during this session to improve Bedrock addon compatibility on the 1.21.1 branch.
 
-## Cambios principales
+## Main Changes
 
-1. Fixes de estabilidad
-- Prevencion de crash en animaciones con loop no reconocido (`AnimationPlayer` fallback defensivo).
-- Prevencion de crash por atributo faltante `generic.attack_damage` en entidades con IA melee fallback.
+1. Stability fixes
+- Prevented crashes in animations with unknown loop values (`AnimationPlayer` defensive fallback).
+- Prevented crashes caused by missing `generic.attack_damage` on entities using fallback melee AI.
 
-2. IA fallback base para entidades data-driven
-- IA basica: moverse, mirar alrededor, mirar jugador, nadar/flotar segun navegacion.
-- Seleccion de hostilidad por `type_family` y fallback por nombre de entidad.
-- Soporte de melee fallback sin reventar atributos.
+2. Base fallback AI for data-driven entities
+- Basic AI: movement, look around, look at player, swim/float based on navigation components.
+- Hostility selection using `type_family` plus fallback by entity name.
+- Melee fallback support without breaking attribute handling.
 
-3. Atributos y movilidad dinamicos
-- Reaplicacion runtime de `health`, `movement`, `knockback_resistance`, `attack`.
-- Soporte de `minecraft:navigation.walk` y `minecraft:navigation.generic` para comportamiento de pathfinding.
+3. Dynamic attributes and mobility
+- Runtime re-application of `health`, `movement`, `knockback_resistance`, and `attack`.
+- Support for `minecraft:navigation.walk` and `minecraft:navigation.generic` for pathfinding behavior.
 
-4. Soporte de componentes nuevos en entidades
+4. New entity component support
 - `minecraft:attack`
 - `minecraft:shooter`
 - `minecraft:behavior.ranged_attack`
@@ -31,22 +31,22 @@ Esta version alternativa incluye los cambios implementados durante esta sesion p
 - `minecraft:movement.generic`
 - `minecraft:underwater_movement`
 
-5. Events y component_groups
-- Aplicacion de `add/remove` de `component_groups`.
-- Soporte de `sequence` y `randomize`.
-- Cola de eventos runtime.
-- Evaluacion basica de `filters` (`all_of`, `any_of`, `none_of` y pruebas comunes como `has_component`, `is_underwater`, `actor_health`, etc.).
+5. Events and component_groups
+- `add/remove` application for `component_groups`.
+- `sequence` and `randomize` support.
+- Runtime event queue.
+- Basic `filters` evaluation (`all_of`, `any_of`, `none_of`, and common tests like `has_component`, `is_underwater`, `actor_health`, etc.).
 
 6. Runtime sensors/timers/transformation
-- `environment_sensor` dispara eventos segun filtros.
-- `timer` dispara `time_down_event` con soporte `looping`.
-- `transformation` convierte entidad con `into` y `delay`.
+- `environment_sensor` triggers events based on filters.
+- `timer` triggers `time_down_event` with `looping` support.
+- `transformation` converts entities via `into` and `delay`.
 
-7. Combate a distancia basico
-- Goal generico para `ranged_attack` + `shooter`.
-- Disparo de proyectil base (flecha) con daño ajustado por `minecraft:attack` cuando existe.
+7. Basic ranged combat
+- Generic goal for `ranged_attack` + `shooter`.
+- Base projectile shooting (arrow) with damage adjusted by `minecraft:attack` when present.
 
-## Archivos tocados
+## Files Updated
 - `src/main/kotlin/net/easecation/bedrockloader/entity/EntityDataDriven.kt`
 - `src/client/kotlin/net/easecation/bedrockloader/animation/AnimationPlayer.kt`
 - `src/main/kotlin/net/easecation/bedrockloader/bedrock/entity/components/EntityComponents.kt`
@@ -58,6 +58,6 @@ Esta version alternativa incluye los cambios implementados durante esta sesion p
 - `src/main/kotlin/net/easecation/bedrockloader/loader/BedrockAddonsRegistry.kt`
 - `src/main/kotlin/net/easecation/bedrockloader/loader/BedrockBehaviorPackLoader.kt`
 
-## Estado
-- Build exitoso en `:1.21.1:build`.
-- Jar actualizado copiado en MultiMC para pruebas locales.
+## Status
+- Build completed successfully in `:1.21.1:build`.
+- Updated JAR copied to MultiMC for local testing.
