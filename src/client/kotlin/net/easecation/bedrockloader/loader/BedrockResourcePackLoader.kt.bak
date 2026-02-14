@@ -1,0 +1,1099 @@
+package net.easecation.bedrockloader.loader
+
+import com.mojang.datafixers.util.Either
+import net.easecation.bedrockloader.BedrockLoader
+import net.easecation.bedrockloader.bedrock.block.component.BlockComponents
+import net.easecation.bedrockloader.bedrock.block.component.ComponentGeometry
+import net.easecation.bedrockloader.bedrock.block.component.ComponentMaterialInstances
+import net.easecation.bedrockloader.bedrock.definition.BlockResourceDefinition
+import net.easecation.bedrockloader.bedrock.definition.EntityRenderControllerDefinition
+import net.easecation.bedrockloader.bedrock.definition.EntityResourceDefinition
+import net.easecation.bedrockloader.java.definition.JavaBlockTag
+import net.easecation.bedrockloader.java.definition.JavaMCMeta
+import net.easecation.bedrockloader.java.definition.VanillaBlockTagsData
+import net.easecation.bedrockloader.loader.context.BedrockPackContext
+import net.easecation.bedrockloader.render.BedrockEntityMaterial
+import net.easecation.bedrockloader.render.BedrockGeometryModel
+import net.easecation.bedrockloader.render.BedrockMaterialInstance
+import net.easecation.bedrockloader.render.VersionCompat
+import net.easecation.bedrockloader.render.renderer.BlockEntityDataDrivenRenderer
+import net.easecation.bedrockloader.render.renderer.EntityDataDrivenRenderer
+import net.easecation.bedrockloader.util.GsonUtil
+import net.fabricmc.fabric.api.blockrenderlayer.v1.BlockRenderLayerMap
+import net.fabricmc.fabric.api.client.rendering.v1.EntityRendererRegistry
+import net.minecraft.client.render.RenderLayer
+import net.minecraft.client.render.block.entity.BlockEntityRendererFactories
+import net.minecraft.client.render.model.json.JsonUnbakedModel
+import net.minecraft.client.render.model.json.ModelTransformation
+//? if >=1.21.4 {
+/*import net.minecraft.client.render.model.ModelTextures
+*///?}
+import net.minecraft.client.texture.MissingSprite
+import net.minecraft.client.util.SpriteIdentifier
+import net.minecraft.util.Identifier
+import java.io.File
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import javax.imageio.ImageIO
+
+class BedrockResourcePackLoader(
+        private val javaResDir: File,
+        private val context: BedrockPackContext
+) {
+
+    private val initedNamespaces = mutableSetOf<String>()
+
+    fun load() {
+        this.init()
+        // 注册资源包上下文，供动态材质创建使用
+        // 使用通配符作为key，因为所有资源包都混合在一个全局context中
+        BedrockAddonsRegistryClient.packContexts["*"] = context
+        // Geometry
+        context.resource.geometries.forEach { (key, value) ->
+            BedrockAddonsRegistryClient.geometries[key] = BedrockGeometryModel.Factory(value)
+        }
+        // Blocks
+        for ((identifier, blockBehaviour) in context.behavior.blocks) {
+            val block = context.resource.blocks[identifier]
+            val blockComponents = blockBehaviour.components
+
+            // tags
+            createBlockTags(identifier, blockComponents.tags)
+            // textures
+            createBlockTextures(identifier, block, blockComponents)
+            // models
+            createBlockModel(identifier, block, blockComponents)
+            createBlockItemModel(identifier, block, blockComponents)
+            // renderer
+            registerBlockRenderLayer(identifier, blockComponents)
+
+            // Block Entity
+            if (block?.client_entity != null) {
+                // textures
+                createBlockEntityTextures(identifier, block)
+                // models
+                createBlockEntityModel(identifier, block)
+                // renderer
+                registerBlockEntityRenderer(identifier)
+            }
+        }
+        // Entity
+        for ((identifier, entityBehaviour) in context.behavior.entities) {
+            val clientEntity = context.resource.entities[identifier]?.description
+
+            // textures
+            createEntityTextures(identifier, clientEntity)
+            createSpawnEggTextures(identifier, clientEntity)
+            // models
+            createEntityModel(identifier, clientEntity)
+            createSpawnEggModel(identifier, clientEntity)
+            // renderer
+            registerEntityRenderController(identifier)
+        }
+    }
+
+    private fun createBlockEntityTextures(identifier: Identifier, block: BlockResourceDefinition.Block) {
+        val clientEntity = block.client_entity?.let { context.resource.entities[it.identifier]?.description } ?: return
+        createEntityTextures(identifier, clientEntity)
+    }
+
+    private fun createBlockEntityModel(identifier: Identifier, block: BlockResourceDefinition.Block) {
+        val clientEntity = block.client_entity?.let { context.resource.entities[it.identifier]?.description } ?: return
+        val (model, material) = createClientEntityModel(identifier, clientEntity) ?: return
+        BedrockAddonsRegistryClient.blockEntityModels[identifier] = model
+        BedrockAddonsRegistryClient.blockEntityMaterial[identifier] = material
+
+        // 注册方块实体动画配置（用于懒加载创建 EntityAnimationManager）
+        registerBlockEntityAnimationConfig(identifier, clientEntity)
+
+        // 注册方块实体缩放配置
+        registerBlockEntityScaleConfig(identifier, clientEntity)
+    }
+
+    private fun registerBlockEntityRenderer(identifier: Identifier) {
+        val blockEntityType = BedrockAddonsRegistry.blockEntities[identifier] ?: return
+        val model = BedrockAddonsRegistryClient.blockEntityModels[identifier] ?: return
+        val material = BedrockAddonsRegistryClient.blockEntityMaterial[identifier] ?: BedrockEntityMaterial.ENTITY
+        val spriteId = model.materials["*"]?.spriteId ?: return
+        // 实体渲染器需要完整的纹理路径（带 textures/ 前缀和 .png 扩展名）
+        // SpriteIdentifier 的 textureId 格式是 block/entity_xxx（不带 textures/ 和 .png）
+        val entityTextureId = Identifier.of(spriteId.textureId.namespace, "textures/" + spriteId.textureId.path + ".png")
+        BlockEntityRendererFactories.register(blockEntityType) { context ->
+            BlockEntityDataDrivenRenderer.create(context, model, entityTextureId, identifier, material)
+        }
+    }
+
+    /**
+     * 初始化临时资源包文件夹
+     */
+    private fun init() {
+        javaResDir.deleteRecursively()
+        javaResDir.mkdirs()
+        // pack.mcmeta
+        val fileMcMeta = javaResDir.resolve("pack.mcmeta")
+        val mcMeta = JavaMCMeta(
+                pack = JavaMCMeta.PackInfo(
+                        pack_format = 34,
+                        description = "Bedrock addons loader"
+                )
+        )
+        Files.newBufferedWriter(fileMcMeta.toPath(), StandardCharsets.UTF_8).use { writer ->
+            GsonUtil.GSON.toJson(mcMeta, writer)
+        }
+        // pack.png
+        val filePackIcon = javaResDir.resolve("pack.png")
+        val packIcon = BedrockLoader::class.java.getResourceAsStream("/res-pack.png")
+        packIcon.use { input ->
+            filePackIcon.outputStream().use { output ->
+                input?.copyTo(output) ?: throw NullPointerException("Cannot find resource: res-pack.png")
+            }
+        }
+        // 创建assets文件夹
+        val assetsDir = javaResDir.resolve("assets")
+        assetsDir.mkdirs()
+        // 创建data文件夹（用于Tag等数据包内容）
+        val dataDir = javaResDir.resolve("data")
+        dataDir.mkdirs()
+        // 加载基岩版原生方块Tag定义
+        loadVanillaBlockTags()
+    }
+
+    /**
+     * 创建JsonUnbakedModel的辅助方法
+     * 处理1.21.4的API变化
+     */
+    private fun createJsonUnbakedModel(
+        parent: Identifier?,
+        textureMap: Map<String, Either<SpriteIdentifier, String>>
+    ): JsonUnbakedModel {
+        //? if >=1.21.4 {
+        /*// 1.21.4: 使用ModelTextures创建Textures对象
+        // 将Either<SpriteIdentifier, String>转换为ModelTextures.Entry
+        val entryMap = mutableMapOf<String, ModelTextures.Entry>()
+        textureMap.forEach { (key, value) ->
+            val entry = value.map(
+                { spriteId -> ModelTextures.Entry.sprite(spriteId.textureId) },
+                { str -> ModelTextures.Entry.id(Identifier.of(str)) }
+            )
+            entryMap[key] = entry
+        }
+        val textures = ModelTextures.Textures(entryMap)
+        return JsonUnbakedModel(parent, emptyList(), textures, null, null, ModelTransformation.NONE)
+        *///?} else {
+        // 1.21.1-1.21.3: 使用Map
+        return JsonUnbakedModel(parent, emptyList(), textureMap, null, null, ModelTransformation.NONE, emptyList())
+        //?}
+    }
+
+    /**
+     * 获取命名空间对应的资源包文件夹，如果不存在则创建
+     */
+    private fun namespaceDir(namespace: String) : File {
+        val namespaceDir = javaResDir.resolve("assets").resolve(namespace)
+        if (!namespaceDir.exists()) {
+            namespaceDir.mkdirs()
+        }
+        // init dirs
+        if (!initedNamespaces.contains(namespace)) {
+            val textures = namespaceDir.resolve("textures")
+            if (!textures.exists()) {
+                textures.mkdirs()
+            }
+            val texturesItem = textures.resolve("item")
+            if (!texturesItem.exists()) {
+                texturesItem.mkdirs()
+            }
+            val texturesBlock = textures.resolve("block")
+            if (!texturesBlock.exists()) {
+                texturesBlock.mkdirs()
+            }
+            val texturesEntity = textures.resolve("entity")
+            if (!texturesEntity.exists()) {
+                texturesEntity.mkdirs()
+            }
+            initedNamespaces.add(namespace)
+        }
+        return namespaceDir
+    }
+
+    /**
+     * 根据方块材质包中的定义，创建一个方块贴图文件（附带命名空间）
+     */
+    private fun createBlockTextures(
+        identifier: Identifier,
+        block: BlockResourceDefinition.Block?,
+        blockComponents: BlockComponents?
+    ) {
+        block?.client_entity?.block_icon?.let { createBlockTexture(identifier, it) }
+        block?.textures?.let { createTextures(identifier, it) }
+        block?.carried_textures?.let { createTextures(identifier, it) }
+        blockComponents?.minecraftMaterialInstances?.values?.forEach { instance ->
+            instance.texture?.let { createBlockTexture(identifier, it) }
+        }
+    }
+
+    private fun createTextures(
+        identifier: Identifier,
+        textures: BlockResourceDefinition.Textures
+    ) {
+        when (textures) {
+            is BlockResourceDefinition.Textures.TexturesAllFace -> {
+                createBlockTexture(identifier, textures.all)
+            }
+            is BlockResourceDefinition.Textures.TexturesMultiFace -> {
+                val directions = mapOf(
+                    "up" to textures.up,
+                    "down" to textures.down,
+                    "north" to textures.north,
+                    "south" to textures.south,
+                    "east" to textures.east,
+                    "west" to textures.west
+                )
+                for ((_, textureKey) in directions) {
+                    textureKey?.let { createBlockTexture(identifier, it) }
+                }
+            }
+        }
+    }
+
+    /**
+     * 根据方块材质包中的定义，创建一个方块贴图文件（附带命名空间）
+     */
+    private fun createBlockTexture(
+        identifier: Identifier,
+        textureKey: String
+    ) {
+        val namespaceDir = this.namespaceDir(identifier.namespace)
+        val textures = context.resource.terrainTexture[textureKey]?.textures
+        val texture = textures?.firstOrNull()?.path
+        if (texture == null) {
+            BedrockLoader.logger.warn("[BedrockResourcePackLoader] Block texture not found: $textureKey")
+            return
+        }
+        val path = "textures/block/${texture.substringAfterLast("/")}"
+        val bedrockTexture = context.resource.textureImages[texture]
+        if (bedrockTexture == null) {
+            BedrockLoader.logger.warn("[BedrockResourcePackLoader] Block texture not found: $textureKey")
+            return
+        }
+        // 统一转换为PNG格式（Minecraft原生纹理系统只支持PNG）
+        val file = namespaceDir.resolve(path + ".png")
+        bedrockTexture.image.let { image ->
+            ImageIO.write(image, "png", file)
+        }
+    }
+
+    /**
+     * 根据方块材质包和行为包中的定义，创建一个方块模型文件（如果设定了模型，则应用模型；否则应用正常方块模型）
+     */
+    private fun createBlockModel(
+        identifier: Identifier,
+        block: BlockResourceDefinition.Block?,
+        blockComponents: BlockComponents?
+    ) {
+        val geometry = blockComponents?.minecraftGeometry
+        val materialInstances = blockComponents?.minecraftMaterialInstances
+
+        // 检查是否使用标准立方体geometry
+        val isStandardCube = geometry == null || isStandardCubeGeometry(geometry)
+
+        if (!isStandardCube) {
+            // 自定义几何体：通过行为包定义模型和贴图
+            val model = createGeometryModel(identifier, geometry!!, materialInstances) ?: return
+            BedrockAddonsRegistryClient.blockModels[identifier] = model
+        } else {
+            // 标准立方体：使用cube模型
+            val textures = block?.textures
+            val model = createCubeModel(identifier, textures, materialInstances)
+            BedrockAddonsRegistryClient.blockModels[identifier] = model
+        }
+    }
+
+    /**
+     * 直接创建一个继承于对应方块模型的物品模型
+     */
+    private fun createBlockItemModel(
+        identifier: Identifier,
+        block: BlockResourceDefinition.Block?,
+        blockComponents: BlockComponents?
+    ) {
+        val bedrockClientEntity = block?.client_entity
+        if (bedrockClientEntity != null) {
+            if (bedrockClientEntity.hand_model_use_client_entity == true) {
+                // 使用客户端实体的几何体渲染物品
+                val clientEntity = context.resource.entities[bedrockClientEntity.identifier]?.description
+                if (clientEntity != null) {
+                    val result = createClientEntityModel(identifier, clientEntity)
+                    if (result != null) {
+                        val (model, _) = result
+                        BedrockAddonsRegistryClient.itemModels[identifier] = model
+                        return
+                    }
+                }
+                // 如果客户端实体模型创建失败，尝试降级到 block_icon
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Failed to create client entity model for item $identifier, falling back to block_icon")
+            }
+            // 使用 block_icon 创建平面图标
+            val blockIcon = bedrockClientEntity.block_icon ?: return
+            val textureMap = mutableMapOf<String, Either<SpriteIdentifier, String>>()
+            context.resource.terrainTextureToJava(identifier.namespace, blockIcon)?.let {
+                textureMap["layer0"] = Either.left(SpriteIdentifier(VersionCompat.BLOCK_ATLAS_TEXTURE, it))
+            }
+            BedrockAddonsRegistryClient.itemModels[identifier] = createJsonUnbakedModel(Identifier.of("item/generated"), textureMap)
+        } else {
+            val geometry = blockComponents?.minecraftGeometry
+            val materialInstances = blockComponents?.minecraftMaterialInstances
+
+            // 检查是否使用标准立方体geometry
+            val isStandardCube = geometry == null || isStandardCubeGeometry(geometry)
+
+            if (!isStandardCube) {
+                // 自定义几何体：通过行为包定义模型和贴图
+                val model = createGeometryModel(identifier, geometry!!, materialInstances) ?: return
+                BedrockAddonsRegistryClient.itemModels[identifier] = model
+            } else {
+                // 标准立方体：使用cube模型
+                val textures = block?.carried_textures ?: block?.textures
+                val model = createCubeModel(identifier, textures, materialInstances)
+                BedrockAddonsRegistryClient.itemModels[identifier] = model
+            }
+        }
+    }
+
+    /**
+     * 判断geometry是否为标准立方体（应该使用createCubeModel处理）
+     * 基岩版内置的标准立方体标识符包括：
+     * - minecraft:geometry.full_block
+     * 未来可能需要添加其他标识符
+     */
+    private fun isStandardCubeGeometry(geometry: ComponentGeometry): Boolean {
+        val geometryIdentifier = when (geometry) {
+            is ComponentGeometry.ComponentGeometrySimple -> geometry.identifier
+            is ComponentGeometry.ComponentGeometryFull -> geometry.identifier
+        }
+
+        return geometryIdentifier == "minecraft:geometry.full_block"
+    }
+
+    private fun createCubeModel(
+        identifier: Identifier,
+        textures: BlockResourceDefinition.Textures?,
+        materialInstances: ComponentMaterialInstances?
+    ): JsonUnbakedModel {
+        val textureMap = mutableMapOf<String, Either<SpriteIdentifier, String>>()
+        // 通过行为包定义了贴图
+        materialInstances?.forEach { (key, value) ->
+            value.texture?.let { texture ->
+                context.resource.terrainTextureToJava(identifier.namespace, texture)?.let { texturePath ->
+                    val spriteId = SpriteIdentifier(VersionCompat.BLOCK_ATLAS_TEXTURE, texturePath)
+                    // 支持多面材质映射
+                    when (key) {
+                        "*" -> textureMap["all"] = Either.left(spriteId)
+                        "side" -> {
+                            // "side" 是基岩版的简写键,表示四个水平侧面
+                            textureMap["north"] = Either.left(spriteId)
+                            textureMap["south"] = Either.left(spriteId)
+                            textureMap["east"] = Either.left(spriteId)
+                            textureMap["west"] = Either.left(spriteId)
+                        }
+                        "north" -> textureMap["north"] = Either.left(spriteId)
+                        "south" -> textureMap["south"] = Either.left(spriteId)
+                        "east" -> textureMap["east"] = Either.left(spriteId)
+                        "west" -> textureMap["west"] = Either.left(spriteId)
+                        "up" -> textureMap["up"] = Either.left(spriteId)
+                        "down" -> textureMap["down"] = Either.left(spriteId)
+                        else -> BedrockLoader.logger.warn("[BedrockResourcePackLoader] Unknown material instance key '$key' for block $identifier")
+                    }
+                }
+            }
+        }
+        // 普通方块情况：通过材质包的blocks.json定义贴图
+        when (textures) {
+            is BlockResourceDefinition.Textures.TexturesAllFace -> {
+                val texture = context.resource.terrainTexture[textures.all]?.textures
+                if (texture == null) {
+                    BedrockLoader.logger.warn("[BedrockResourcePackLoader] Block texture not found: ${textures.all}")
+                } else {
+                    context.resource.terrainTextureToJava(identifier.namespace, textures.all)?.let {
+                        textureMap["all"] = Either.left(SpriteIdentifier(VersionCompat.BLOCK_ATLAS_TEXTURE, it))
+                    }
+                }
+            }
+            is BlockResourceDefinition.Textures.TexturesMultiFace -> {
+                val directions = mapOf(
+                    "up" to textures.up,
+                    "down" to textures.down,
+                    "north" to textures.north,
+                    "south" to textures.south,
+                    "east" to textures.east,
+                    "west" to textures.west
+                )
+                for ((direction, textureKey) in directions) {
+                    textureKey?.let {
+                        context.resource.terrainTextureToJava(identifier.namespace, it)?.let { texture ->
+                            textureMap[direction] = Either.left(SpriteIdentifier(VersionCompat.BLOCK_ATLAS_TEXTURE, texture))
+                        }
+                    }
+                }
+            }
+            else -> BedrockLoader.logger.warn("[BedrockResourcePackLoader] Block $identifier has no textures defined.")
+        }
+        return createJsonUnbakedModel(Identifier.of("block/cube_all"), textureMap)
+    }
+
+    private fun createGeometryModel(
+        identifier: Identifier,
+        geometry: ComponentGeometry,
+        materialInstances: ComponentMaterialInstances?
+    ): BedrockGeometryModel? {
+        val geometryIdentifier = when (geometry) {
+            is ComponentGeometry.ComponentGeometrySimple -> geometry.identifier
+            is ComponentGeometry.ComponentGeometryFull -> geometry.identifier
+        }
+        val geometryFactory = BedrockAddonsRegistryClient.geometries[geometryIdentifier]
+        val materials = materialInstances?.mapValues { (_, material) ->
+            val textureKey = material.texture ?: return@mapValues null
+            val textures = context.resource.terrainTexture[textureKey]?.textures ?: return@mapValues null
+            val texture = textures.firstOrNull()?.path ?: return@mapValues null
+            val spriteId = SpriteIdentifier(
+                VersionCompat.BLOCK_ATLAS_TEXTURE,
+                Identifier.of(identifier.namespace, "block/${texture.substringAfterLast("/")}")
+            )
+            return@mapValues BedrockMaterialInstance(spriteId)
+        }?.mapValues {
+            it.value ?: BedrockMaterialInstance(
+                SpriteIdentifier(
+                    VersionCompat.BLOCK_ATLAS_TEXTURE,
+                    MissingSprite.getMissingSpriteId()
+                )
+            )
+        } ?: emptyMap()
+        // 使用带identifier的create方法，支持permutations动态材质切换
+        return geometryFactory?.create(materials, identifier)
+    }
+
+    private fun registerBlockRenderLayer(
+        identifier: Identifier,
+        blockComponents: BlockComponents?
+    ) {
+        val materialInstances = blockComponents?.minecraftMaterialInstances
+        val block = BedrockAddonsRegistry.blocks[identifier] ?: return
+        val renderMethod = materialInstances?.get("*")?.render_method ?: return
+        if (renderMethod == ComponentMaterialInstances.RenderMethod.alpha_test) {
+            BlockRenderLayerMap.INSTANCE.putBlock(block, RenderLayer.getCutout())
+        } else if (renderMethod == ComponentMaterialInstances.RenderMethod.blend) {
+            BlockRenderLayerMap.INSTANCE.putBlock(block, RenderLayer.getTranslucent())
+        }
+    }
+
+    private fun createSpawnEggTextures(
+        identifier: Identifier,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription?
+    ) {
+        val namespaceDir = this.namespaceDir(identifier.namespace)
+        val spawnEggTexture = clientEntity?.spawn_egg?.texture
+        if (spawnEggTexture != null) {
+            val textures = context.resource.itemTexture[spawnEggTexture]?.textures
+            val texture = textures?.firstOrNull()?.path
+            if (texture == null) {
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Entity spawn egg texture not found: $spawnEggTexture")
+                return
+            }
+            val path = "textures/item/${texture.substringAfterLast("/")}"
+            val bedrockTexture = context.resource.textureImages[texture]
+            if (bedrockTexture == null) {
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Entity spawn egg texture not found: $spawnEggTexture")
+                return
+            }
+            // 统一转换为PNG格式（Minecraft原生纹理系统只支持PNG）
+            val file = namespaceDir.resolve(path + ".png")
+            bedrockTexture.image.let { image ->
+                ImageIO.write(image, "png", file)
+            }
+        }
+    }
+
+    /**
+     * 直接创建一个继承于对应实体的生物蛋物品
+     */
+    private fun createSpawnEggModel(
+        identifier: Identifier,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription?
+    ) {
+        context.behavior.entities[identifier]?.description?.is_spawnable?.let {
+            val entityName = identifier.path
+            val itemIdentifier = Identifier.of(identifier.namespace, "${entityName}_spawn_egg")
+            val spawnEggTexture = clientEntity?.spawn_egg?.texture
+            if (spawnEggTexture != null) {
+                val textureMap = mutableMapOf<String, Either<SpriteIdentifier, String>>()
+                context.resource.itemTextureToJava(itemIdentifier.namespace, spawnEggTexture)?.let {
+                    textureMap["layer0"] = Either.left(SpriteIdentifier(VersionCompat.BLOCK_ATLAS_TEXTURE, it))
+                }
+                BedrockAddonsRegistryClient.itemModels[itemIdentifier] = createJsonUnbakedModel(Identifier.of("item/generated"), textureMap)
+            } else {
+                // 1.21.4: DelegatingUnbakedModel已移除，不注册模型以使用默认模型
+                //? if >=1.21.4 {
+                 /*不注册，使用默认的spawn egg模型Token(value=
+, type=COMMENT_END)                *///?} else {
+                BedrockAddonsRegistryClient.itemModels[itemIdentifier] = net.fabricmc.fabric.api.client.model.loading.v1.DelegatingUnbakedModel(Identifier.of("item/template_spawn_egg"))
+                //?}
+            }
+        }
+    }
+
+    /**
+     * 从ClientEntity读取需要的模型，然后将对应的模型保存到Java材质包中（对应命名空间）
+     * 同时注册动画配置和材质类型
+     */
+    private fun createEntityModel(
+        identifier: Identifier,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription?
+    ) {
+        val (model, material) = createClientEntityModel(identifier, clientEntity) ?: return
+        BedrockAddonsRegistryClient.entityModel[identifier] = model
+        BedrockAddonsRegistryClient.entityMaterial[identifier] = material
+
+        // 注册动画配置（用于懒加载创建 EntityAnimationManager）
+        registerEntityAnimationConfig(identifier, clientEntity)
+
+        // 注册缩放配置
+        registerEntityScaleConfig(identifier, clientEntity)
+    }
+
+    /**
+     * 注册实体动画配置
+     *
+     * 解析 ClientEntity 中的 animations 和 scripts.animate 配置，
+     * 存储到 BedrockAddonsRegistryClient 供实体运行时使用。
+     */
+    private fun registerEntityAnimationConfig(
+        identifier: Identifier,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription?
+    ) {
+        if (clientEntity == null) return
+
+        val animationMap = clientEntity.animations ?: return
+        val scripts = clientEntity.scripts ?: return
+        val animateList = scripts.animate ?: return
+
+        // 解析 scripts.animate 列表
+        val autoPlayList = animateList.mapNotNull { item ->
+            when (item) {
+                is String -> item
+                is Map<*, *> -> item.keys.firstOrNull()?.toString()
+                else -> null
+            }
+        }
+
+        if (autoPlayList.isEmpty()) return
+
+        // 收集需要的动画数据
+        val animations = mutableMapOf<String, net.easecation.bedrockloader.bedrock.definition.AnimationDefinition.Animation>()
+        for (alias in autoPlayList) {
+            val animId = animationMap[alias] ?: continue
+            val anim = context.resource.animations[animId]
+            if (anim != null) {
+                animations[animId] = anim
+            } else {
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Animation not found: $animId for entity $identifier")
+            }
+        }
+
+        if (animations.isEmpty()) return
+
+        // 注册动画配置
+        BedrockAddonsRegistryClient.entityAnimationConfigs[identifier] = EntityAnimationConfig(
+            animationMap = animationMap,
+            animations = animations,
+            autoPlayList = autoPlayList
+        )
+
+        BedrockLoader.logger.debug("[BedrockResourcePackLoader] Registered animation config for entity $identifier: ${autoPlayList.size} auto-play animations")
+    }
+
+    /**
+     * 注册方块实体动画配置
+     *
+     * 解析 ClientEntity 中的 animations 和 scripts.animate 配置，
+     * 存储到 BedrockAddonsRegistryClient.blockEntityAnimationConfigs 供方块实体运行时使用。
+     */
+    private fun registerBlockEntityAnimationConfig(
+        identifier: Identifier,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription?
+    ) {
+        if (clientEntity == null) return
+
+        val animationMap = clientEntity.animations ?: return
+        val scripts = clientEntity.scripts ?: return
+        val animateList = scripts.animate ?: return
+
+        // 解析 scripts.animate 列表
+        val autoPlayList = animateList.mapNotNull { item ->
+            when (item) {
+                is String -> item
+                is Map<*, *> -> item.keys.firstOrNull()?.toString()
+                else -> null
+            }
+        }
+
+        if (autoPlayList.isEmpty()) return
+
+        // 收集需要的动画数据
+        val animations = mutableMapOf<String, net.easecation.bedrockloader.bedrock.definition.AnimationDefinition.Animation>()
+        for (alias in autoPlayList) {
+            val animId = animationMap[alias] ?: continue
+            val anim = context.resource.animations[animId]
+            if (anim != null) {
+                animations[animId] = anim
+            } else {
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Animation not found: $animId for block entity $identifier")
+            }
+        }
+
+        if (animations.isEmpty()) return
+
+        // 注册动画配置到方块实体专用存储
+        BedrockAddonsRegistryClient.blockEntityAnimationConfigs[identifier] = EntityAnimationConfig(
+            animationMap = animationMap,
+            animations = animations,
+            autoPlayList = autoPlayList
+        )
+
+        BedrockLoader.logger.info("[BedrockResourcePackLoader] Registered animation config for block entity $identifier: ${autoPlayList.size} auto-play animations")
+    }
+
+    /**
+     * 解析 scripts.scale 值为 Float
+     * 支持格式: 数字、字符串数字
+     * Molang 表达式返回默认值 1.0f
+     */
+    private fun parseScaleValue(scale: Any?): Float {
+        if (scale == null) return 1.0f
+        return when (scale) {
+            is Number -> scale.toFloat()
+            is String -> scale.toFloatOrNull() ?: run {
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Molang scale expression not supported, using default 1.0: $scale")
+                1.0f
+            }
+            else -> 1.0f
+        }
+    }
+
+    /**
+     * 注册实体缩放配置
+     */
+    private fun registerEntityScaleConfig(
+        identifier: Identifier,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription?
+    ) {
+        val scripts = clientEntity?.scripts ?: return
+        val scale = parseScaleValue(scripts.scale)
+        if (scale != 1.0f) {
+            BedrockAddonsRegistryClient.entityScaleConfigs[identifier] = scale
+            BedrockLoader.logger.info("[BedrockResourcePackLoader] Registered scale $scale for entity $identifier")
+        }
+    }
+
+    /**
+     * 注册方块实体缩放配置
+     */
+    private fun registerBlockEntityScaleConfig(
+        identifier: Identifier,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription?
+    ) {
+        val scripts = clientEntity?.scripts ?: return
+        val scale = parseScaleValue(scripts.scale)
+        if (scale != 1.0f) {
+            BedrockAddonsRegistryClient.blockEntityScaleConfigs[identifier] = scale
+            BedrockLoader.logger.info("[BedrockResourcePackLoader] Registered scale $scale for block entity $identifier")
+        }
+    }
+
+    /**
+     * 从ClientEntity读取需要的模型和材质类型
+     *
+     * @return Pair(模型, 材质类型)，如果失败则返回 null
+     */
+    private fun createClientEntityModel(
+        identifier: Identifier,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription?
+    ): Pair<BedrockGeometryModel, BedrockEntityMaterial>? {
+        val controllers = clientEntity?.render_controllers ?: return null
+        if (controllers.isEmpty()) return null
+        if (controllers.size > 1) {
+            BedrockLoader.logger.warn("[BedrockResourcePackLoader] Entity {} has more than one render controller, only the first one will be used.", clientEntity.identifier)
+        }
+        val controller = controllers[0]
+        val renderController = context.resource.renderControllers[controller.id] ?: return null
+        return createRenderControllerModel(identifier, clientEntity, renderController)
+    }
+
+    /**
+     * 从RenderController读取需要的模型和材质类型
+     *
+     * @return Pair(模型, 材质类型)，如果失败则返回 null
+     */
+    private fun createRenderControllerModel(
+        identifier: Identifier,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription,
+        renderController: EntityRenderControllerDefinition.RenderController
+    ): Pair<BedrockGeometryModel, BedrockEntityMaterial>? {
+        val geometryMolang = renderController.geometry
+        val geometryAlias = geometryMolang.substringAfter("geometry.").substringAfter("Geometry.")
+        val geometryIdentifier = clientEntity.geometry?.get(geometryAlias) ?: return null
+        val geometryFactory = BedrockAddonsRegistryClient.geometries[geometryIdentifier] ?: return null
+        val textureMolang = renderController.textures?.firstOrNull() ?: return null
+        val textureAlias = textureMolang.substringAfter("texture.").substringAfter("Texture.")
+        val texture = clientEntity.textures?.get(textureAlias) ?: return null
+        val bedrockTexture = context.resource.textureImages[texture] ?: return null
+        // 使用 block/entity_xxx 路径，以便纹理能被 BLOCK_ATLAS 正确加载
+        // BLOCK_ATLAS 默认只加载 textures/block/ 目录的纹理
+        val spriteId = SpriteIdentifier(
+            VersionCompat.BLOCK_ATLAS_TEXTURE,
+            Identifier.of(identifier.namespace, "block/entity_" + texture.substringAfterLast("/"))
+        )
+        val materials = mapOf("*" to BedrockMaterialInstance(spriteId))
+        val model = geometryFactory.create(materials)
+
+        // 解析材质类型
+        // RenderController.materials 格式: [{"*": "Material.default"}, {"body": "Material.emissive"}]
+        // 我们取第一个通配符材质（"*"）的值
+        val entityMaterial = parseMaterialFromRenderController(renderController, clientEntity)
+
+        return Pair(model, entityMaterial)
+    }
+
+    /**
+     * 从 RenderController 解析材质类型
+     *
+     * 数据流：RenderController.materials → ClientEntity.materials → BedrockEntityMaterial
+     */
+    private fun parseMaterialFromRenderController(
+        renderController: EntityRenderControllerDefinition.RenderController,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription
+    ): BedrockEntityMaterial {
+        // 从 RenderController.materials 获取材质别名
+        // 格式: [{"*": "Material.default"}, {"bone_name": "Material.xxx"}]
+        val materialsList = renderController.materials
+        if (materialsList.isEmpty()) {
+            return BedrockEntityMaterial.ENTITY
+        }
+
+        // 优先查找通配符材质 "*"，否则取第一个
+        val materialEntry = materialsList.find { it.containsKey("*") } ?: materialsList.firstOrNull()
+        val materialMolang = materialEntry?.values?.firstOrNull() ?: return BedrockEntityMaterial.ENTITY
+
+        // 解析 Molang 表达式，提取材质别名
+        // 格式: "Material.default" 或 "material.default"
+        val materialAlias = materialMolang
+            .substringAfter("Material.")
+            .substringAfter("material.")
+
+        // 从 ClientEntity.materials 查找实际材质名称
+        // ClientEntity.materials 格式: {"default": "entity", "emissive": "entity_emissive"}
+        val actualMaterialName = clientEntity.materials?.get(materialAlias) ?: materialAlias
+
+        return BedrockEntityMaterial.fromBedrockName(actualMaterialName)
+    }
+
+    /**
+     * 从ClientEntity读取需要的贴图，然后将对应的贴图文件保存到java材质包中（对应命名空间）
+     * 纹理保存到 textures/entity/ 目录（Minecraft 标准实体贴图位置）
+     * 例如：textures/entity/bench.png → textures/entity/bench.png
+     */
+    private fun createEntityTextures(
+        identifier: Identifier,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription?
+    ) {
+        val namespaceDir = this.namespaceDir(identifier.namespace)
+        clientEntity?.textures?.forEach { (_, texture) ->
+            val bedrockTexture = context.resource.textureImages[texture]
+            if (bedrockTexture == null) {
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Entity texture not found: $texture")
+                return
+            }
+            // 保存到 textures/block/ 目录，使用 entity_ 前缀避免冲突
+            // 这样纹理才能被 BLOCK_ATLAS 正确加载（用于 inventory 渲染）
+            // 统一转换为PNG格式（Minecraft原生纹理系统只支持PNG）
+            val fileName = "entity_" + texture.substringAfterLast("/")
+            val file = namespaceDir.resolve("textures/block/$fileName.png")
+            file.parentFile.mkdirs()
+            bedrockTexture.image.let { image ->
+                ImageIO.write(image, "png", file)
+            }
+        }
+    }
+
+    /**
+     * 注册实体渲染器
+     */
+    private fun registerEntityRenderController(identifier: Identifier) {
+        val entityType = BedrockAddonsRegistry.entities[identifier] ?: return
+        val model = BedrockAddonsRegistryClient.entityModel[identifier] ?: return
+        val material = BedrockAddonsRegistryClient.entityMaterial[identifier] ?: BedrockEntityMaterial.ENTITY
+        val spriteId = model.materials["*"]?.spriteId ?: return
+        // 实体渲染器需要完整的纹理路径（带 textures/ 前缀和 .png 扩展名）
+        // SpriteIdentifier 的 textureId 格式是 block/entity_xxx（不带 textures/ 和 .png）
+        val entityTextureId = Identifier.of(spriteId.textureId.namespace, "textures/" + spriteId.textureId.path + ".png")
+        EntityRendererRegistry.register(entityType) { context ->
+            EntityDataDrivenRenderer.create(context, model, 0.5f, entityTextureId, identifier, material)
+        }
+    }
+
+    /**
+     * 为方块生成Tag JSON文件
+     *
+     * 将基岩版方块的 tag:* 组件转换为Java版数据包Tag文件。
+     * 例如：`tag:wood` → `data/minecraft/tags/blocks/wood.json`
+     *
+     * @param identifier 方块标识符
+     * @param tags 方块的Tag集合（从BlockComponents.tags提取）
+     */
+    private fun createBlockTags(
+        identifier: Identifier,
+        tags: Set<String>
+    ) {
+        if (tags.isEmpty()) return
+
+        // 按命名空间和路径分组tag
+        // 例如："wood" → minecraft:wood → data/minecraft/tags/blocks/wood.json
+        //      "c:ores" → c:ores → data/c/tags/blocks/ores.json
+        val tagsByNamespace = mutableMapOf<String, MutableMap<String, MutableList<String>>>()
+
+        for (tagName in tags) {
+            // 跳过空白tag名称
+            if (tagName.isBlank()) {
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Skipping empty tag for block $identifier")
+                continue
+            }
+
+            // 解析tag名称，提取命名空间和路径
+            val (namespace, path) = if (tagName.contains(':')) {
+                val parts = tagName.split(':', limit = 2)
+                parts[0].lowercase() to parts[1]  // 命名空间强制小写
+            } else {
+                "minecraft" to tagName
+            }
+
+            // 将方块ID添加到对应的tag
+            tagsByNamespace
+                .getOrPut(namespace) { mutableMapOf() }
+                .getOrPut(path) { mutableListOf() }
+                .add(identifier.toString())
+        }
+
+        // 为每个tag生成JSON文件
+        for ((namespace, tagMap) in tagsByNamespace) {
+            for ((path, blockIds) in tagMap) {
+                createTagFile(namespace, path, blockIds)
+            }
+        }
+    }
+
+    /**
+     * 创建单个Tag JSON文件
+     *
+     * 支持Tag合并：如果文件已存在，会读取并合并方块ID列表。
+     * 支持子目录：路径如 `mineable/pickaxe` 会创建 `mineable/pickaxe.json`
+     *
+     * @param namespace Tag命名空间（如 minecraft, c）
+     * @param path Tag路径（如 wood, mineable/pickaxe）
+     * @param blockIds 要添加到Tag的方块ID列表
+     */
+    private fun createTagFile(
+        namespace: String,
+        path: String,
+        blockIds: List<String>
+    ) {
+        // 构建文件路径（支持子目录，如 mineable/pickaxe）
+        val tagDir = if (path.contains('/')) {
+            // 有子目录的情况
+            val parentPath = path.substringBeforeLast('/')
+            javaResDir.resolve("data/$namespace/tags/block/$parentPath")
+        } else {
+            // 无子目录的情况
+            javaResDir.resolve("data/$namespace/tags/block")
+        }
+
+        // 确保目录存在
+        tagDir.mkdirs()
+
+        // 获取文件名（路径的最后一部分）
+        val fileName = path.substringAfterLast('/') + ".json"
+        val tagFile = File(tagDir, fileName)
+
+        // 如果文件已存在，读取并合并
+        val existingBlocks = if (tagFile.exists()) {
+            try {
+                val existingJson = GsonUtil.GSON.fromJson(
+                    tagFile.readText(StandardCharsets.UTF_8),
+                    JavaBlockTag::class.java
+                )
+                existingJson.values.toMutableList()
+            } catch (e: Exception) {
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Failed to read existing tag file: $tagFile", e)
+                mutableListOf()
+            }
+        } else {
+            mutableListOf()
+        }
+
+        // 合并新方块ID（去重并排序）
+        val allBlocks = (existingBlocks + blockIds).distinct().sorted()
+
+        // 创建Tag对象
+        val tag = JavaBlockTag(
+            replace = false,  // 不替换现有Tag，与其他数据包合并
+            values = allBlocks
+        )
+
+        // 写入文件
+        try {
+            Files.newBufferedWriter(tagFile.toPath(), StandardCharsets.UTF_8).use { writer ->
+                GsonUtil.GSON.toJson(tag, writer)
+            }
+            BedrockLoader.logger.debug("[BedrockResourcePackLoader] Generated tag: $namespace:$path with ${allBlocks.size} blocks")
+        } catch (e: Exception) {
+            BedrockLoader.logger.error("[BedrockResourcePackLoader] Failed to write tag file: $tagFile", e)
+        }
+    }
+
+    /**
+     * 加载基岩版原生方块Tag定义
+     *
+     * 从 `src/main/resources/vanilla_block_tags.json` 读取基岩版官方定义的方块Tag，
+     * 并为每个Tag生成对应的Java版数据包Tag文件。
+     *
+     * 这些Tag将被用于Molang条件查询，例如：
+     * - `query.block_neighbor_has_all_tags(0, -1, 0, 'dirt')`
+     * - `query.block_neighbor_has_any_tag(0, 0, -1, 'wood', 'log')`
+     *
+     * 文件格式说明：
+     * - Tag名称格式：`` `dirt` `` 或 `` `minecraft:crop` `` （被反引号包裹）
+     * - 方块ID格式：`` `minecraft:stone` `` （被反引号包裹，包含完整命名空间）
+     */
+    private fun loadVanillaBlockTags() {
+        try {
+            // 从resources读取vanilla_block_tags.json
+            val inputStream = BedrockLoader::class.java.getResourceAsStream("/vanilla_block_tags.json")
+            if (inputStream == null) {
+                BedrockLoader.logger.warn("[VanillaBlockTags] vanilla_block_tags.json not found in resources, skipping")
+                return
+            }
+
+            // 解析JSON
+            val data = inputStream.bufferedReader(StandardCharsets.UTF_8).use { reader ->
+                GsonUtil.GSON.fromJson(reader, VanillaBlockTagsData::class.java)
+            }
+
+            if (data.rows.isEmpty()) {
+                BedrockLoader.logger.warn("[VanillaBlockTags] No tag data found in vanilla_block_tags.json")
+                return
+            }
+
+            // 加载基岩版到Java版的方块ID映射
+            val blockIdMapping = loadBedrockToJavaBlockIdMapping()
+            BedrockLoader.logger.info("[VanillaBlockTags] Loaded ${blockIdMapping.size} block ID mappings")
+
+            // 处理每个Tag行
+            var successCount = 0
+            var totalFilteredBlocks = 0
+            var totalMappedBlocks = 0
+
+            for (row in data.rows) {
+                try {
+                    // 去掉反引号，提取Tag名称
+                    val tagName = row.tag.trim('`', ' ')
+                    if (tagName.isBlank()) {
+                        BedrockLoader.logger.warn("[VanillaBlockTags] Skipping empty tag name")
+                        continue
+                    }
+
+                    // 去掉反引号，提取方块ID列表（基岩版ID）
+                    val bedrockBlockIds = row.vanilla_usage.map { it.trim('`', ' ') }.filter { it.isNotBlank() }
+                    if (bedrockBlockIds.isEmpty()) {
+                        BedrockLoader.logger.warn("[VanillaBlockTags] Tag '$tagName' has no block IDs, skipping")
+                        continue
+                    }
+
+                    // 应用映射：基岩版ID -> Java版ID
+                    val javaBlockIds = mutableListOf<String>()
+                    for (bedrockId in bedrockBlockIds) {
+                        // 移除minecraft:前缀（如果有）
+                        val cleanBedrockId = bedrockId.removePrefix("minecraft:")
+
+                        // 查找映射
+                        val javaId = blockIdMapping[cleanBedrockId]
+
+                        when {
+                            javaId == null -> {
+                                // 映射为null，表示Java版中不存在，需要过滤
+                                totalFilteredBlocks++
+                                BedrockLoader.logger.debug("[VanillaBlockTags] Filtered block (not in Java): $bedrockId")
+                            }
+                            javaId != cleanBedrockId -> {
+                                // ID不同，需要映射
+                                javaBlockIds.add("minecraft:$javaId")
+                                totalMappedBlocks++
+                                BedrockLoader.logger.debug("[VanillaBlockTags] Mapped block: $bedrockId -> minecraft:$javaId")
+                            }
+                            else -> {
+                                // ID相同，直接使用
+                                javaBlockIds.add(bedrockId)
+                            }
+                        }
+                    }
+
+                    if (javaBlockIds.isEmpty()) {
+                        BedrockLoader.logger.debug("[VanillaBlockTags] Tag '$tagName' has no valid Java blocks after mapping, skipping")
+                        continue
+                    }
+
+                    // 解析命名空间和路径
+                    val (namespace, path) = if (tagName.contains(':')) {
+                        val parts = tagName.split(':', limit = 2)
+                        parts[0].lowercase() to parts[1]
+                    } else {
+                        "minecraft" to tagName
+                    }
+
+                    // 生成Tag文件（复用现有的createTagFile方法）
+                    createTagFile(namespace, path, javaBlockIds)
+                    successCount++
+
+                } catch (e: Exception) {
+                    BedrockLoader.logger.error("[VanillaBlockTags] Failed to process tag: ${row.tag}", e)
+                }
+            }
+
+            BedrockLoader.logger.info("[VanillaBlockTags] Successfully loaded $successCount / ${data.rows.size} vanilla block tags")
+            BedrockLoader.logger.info("[VanillaBlockTags] Mapped $totalMappedBlocks blocks, filtered $totalFilteredBlocks blocks (not in Java)")
+
+        } catch (e: Exception) {
+            BedrockLoader.logger.error("[VanillaBlockTags] Failed to load vanilla_block_tags.json", e)
+        }
+    }
+
+    /**
+     * 加载基岩版到Java版的方块ID映射表
+     *
+     * @return 映射表，key为基岩版ID（不带命名空间），value为Java版ID（不带命名空间）或null（表示不存在）
+     */
+    private fun loadBedrockToJavaBlockIdMapping(): Map<String, String?> {
+        try {
+            val inputStream = BedrockLoader::class.java.getResourceAsStream("/bedrock_to_java_block_ids.json")
+            if (inputStream == null) {
+                BedrockLoader.logger.warn("[VanillaBlockTags] bedrock_to_java_block_ids.json not found, using identity mapping")
+                return emptyMap()
+            }
+
+            return inputStream.bufferedReader(StandardCharsets.UTF_8).use { reader ->
+                GsonUtil.GSON.fromJson(reader, object : com.google.gson.reflect.TypeToken<Map<String, String?>>() {}.type)
+            }
+        } catch (e: Exception) {
+            BedrockLoader.logger.error("[VanillaBlockTags] Failed to load bedrock_to_java_block_ids.json", e)
+            return emptyMap()
+        }
+    }
+
+}

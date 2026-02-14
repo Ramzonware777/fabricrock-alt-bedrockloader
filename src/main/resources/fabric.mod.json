@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "id": "bedrock-loader",
+  "version": "${version}",
+  "name": "Bedrock Loader",
+  "description": "Effortlessly transforming Minecraft Bedrock Addons into new horizons for Fabric.",
+  "authors": [
+    "Choi-Jungwoo"
+  ],
+  "contact": {
+    "homepage": "https://fabricmc.net/",
+    "sources": "https://github.com/FabricMC/fabric-example-mod"
+  },
+  "license": "MIT",
+  "icon": "assets/bedrock-loader/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "preLaunch": [
+      {
+        "value": "net.easecation.bedrockloader.sync.client.RemotePackSyncPreLaunch",
+        "adapter": "kotlin"
+      }
+    ],
+    "main": [
+      {
+        "value": "net.easecation.bedrockloader.BedrockLoader",
+        "adapter": "kotlin"
+      }
+    ],
+    "client": [
+      {
+        "value": "net.easecation.bedrockloader.BedrockLoaderClient",
+        "adapter": "kotlin"
+      }
+    ],
+    "modmenu": [
+      {
+        "value": "net.easecation.bedrockloader.config.ModMenuIntegration",
+        "adapter": "kotlin"
+      }
+    ]
+  },
+  "mixins": [
+    "bedrock-loader.mixins.json",
+    "bedrock-loader.client.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.10",
+    "minecraft": "~1.21-",
+    "java": ">=21",
+    "fabric-api": "*",
+    "fabric-language-kotlin": "*"
+  },
+  "suggests": {
+    "another-mod": "*"
+  }
+}

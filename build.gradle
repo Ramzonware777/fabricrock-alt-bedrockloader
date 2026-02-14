@@ -1,0 +1,198 @@
+plugins {
+	id 'fabric-loom' version '1.13.6'
+	id 'maven-publish'
+    id "org.jetbrains.kotlin.jvm" version "2.1.10"
+    id 'dev.kikugie.stonecutter'
+    id 'idea'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+// Stonecutter版本配置 - 必须在最前面
+def mcVersion = stonecutter.current.project
+def versionConfig = [
+	'1.21.1': [
+		yarn: '1.21.1+build.3',
+		fabricApi: '0.104.0+1.21.1',
+		yacl: '3.8.1+1.21.1-fabric',
+		modmenu: '11.0.3'
+	],
+	'1.21.2': [
+		yarn: '1.21.2+build.1',
+		fabricApi: '0.106.1+1.21.2',
+		yacl: '3.6.2+1.21.2-fabric',  // 1.21.2只有3.6.2版本
+		modmenu: '12.0.0'
+	],
+	'1.21.3': [
+		yarn: '1.21.3+build.2',
+		fabricApi: '0.114.1+1.21.3',
+		yacl: '3.8.1+1.21.3-fabric',
+		modmenu: '12.0.0'
+	],
+	'1.21.4': [
+		yarn: '1.21.4+build.8',
+		fabricApi: '0.114.3+1.21.4',
+		yacl: '3.8.1+1.21.4-fabric',
+		modmenu: '13.0.3'
+	]
+][mcVersion]
+
+// 更新项目属性
+project.ext.minecraft_version = mcVersion
+project.ext.yarn_mappings = versionConfig.yarn
+project.ext.fabric_version = versionConfig.fabricApi
+project.ext.yacl_version = versionConfig.yacl
+project.ext.modmenu_version = versionConfig.modmenu
+
+base {
+	archivesName = "${project.archives_base_name}-mc${mcVersion}"
+}
+
+idea {
+    module {
+        downloadJavadoc = false
+        downloadSources = true
+    }
+}
+
+repositories {
+	// Add repositories to retrieve artifacts from in here.
+	// You should only use this when depending on other mods because
+	// Loom adds the essential maven repositories to download Minecraft and libraries from automatically.
+	// See https://docs.gradle.org/current/userguide/declaring_repositories.html
+	// for more information about repositories.
+
+	// YACL配置界面库
+	maven { url "https://maven.isxander.dev/releases" }
+	// ModMenu前置模组
+	maven { url "https://maven.terraformersmc.com/releases/" }
+	// Placeholder API (ModMenu依赖)
+	maven { url "https://maven.nucleoid.xyz/" }
+}
+
+loom {
+	splitEnvironmentSourceSets()
+
+	mods {
+		"bedrock-loader" {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+
+}
+
+fabricApi {
+	configureDataGeneration {
+		client = true
+	}
+}
+
+dependencies {
+	// To change the versions see the gradle.properties file
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+	// Fabric API. This is technically optional, but you probably want it anyway.
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+	modImplementation "net.fabricmc:fabric-language-kotlin:${project.fabric_kotlin_version}"
+
+	// Remote Pack Sync - HTTP Server
+	implementation "io.javalin:javalin:6.3.0"
+	include "io.javalin:javalin:6.3.0"
+
+	// Javalin传递依赖 - 显式include以确保打包到生产JAR
+	include "org.eclipse.jetty:jetty-server:11.0.23"
+	include "org.eclipse.jetty:jetty-servlet:11.0.23"
+	include "org.eclipse.jetty:jetty-security:11.0.23"
+	include "org.eclipse.jetty:jetty-webapp:11.0.23"
+	include "org.eclipse.jetty:jetty-http:11.0.23"
+	include "org.eclipse.jetty:jetty-io:11.0.23"
+	include "org.eclipse.jetty:jetty-util:11.0.23"
+	include "org.eclipse.jetty:jetty-xml:11.0.23"
+	include "org.eclipse.jetty.toolchain:jetty-jakarta-servlet-api:5.0.2"
+	include "org.eclipse.jetty.websocket:websocket-jetty-server:11.0.23"
+	include "org.eclipse.jetty.websocket:websocket-jetty-api:11.0.23"
+	include "org.eclipse.jetty.websocket:websocket-jetty-common:11.0.23"
+	include "org.eclipse.jetty.websocket:websocket-servlet:11.0.23"
+	include "org.eclipse.jetty.websocket:websocket-core-server:11.0.23"
+	include "org.eclipse.jetty.websocket:websocket-core-common:11.0.23"
+
+	// Remote Pack Sync - YAML Configuration
+	implementation "org.yaml:snakeyaml:2.0"
+	include "org.yaml:snakeyaml:2.0"
+
+	// Config UI - YACL (Yet Another Config Lib)
+	modImplementation "dev.isxander:yet-another-config-lib:${project.yacl_version}"
+
+	// ModMenu - 提供模组列表和配置入口
+	modImplementation "com.terraformersmc:modmenu:${project.modmenu_version}"
+
+	// 注意：不需要单独添加SLF4J实现，Minecraft已经通过Log4j2提供了SLF4J支持
+}
+
+processResources {
+	inputs.property "version", project.version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": inputs.properties.version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 21
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).all {
+	kotlinOptions {
+		jvmTarget = 21
+	}
+}
+
+java {
+	// Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task
+	// if it is present.
+	// If you remove this line, sources will not be generated.
+	withSourcesJar()
+
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+jar {
+	inputs.property "archivesName", project.base.archivesName
+
+	from("LICENSE") {
+		rename { "${it}_${inputs.properties.archivesName}"}
+	}
+}
+
+//? if >=1.21.4 {
+// 1.21.4: 配置remapJar任务以忽略映射冲突
+tasks.named('remapJar') {
+	doFirst {
+		// 设置系统属性以允许映射冲突
+		System.setProperty('fabric.loom.allowConflicts', 'true')
+	}
+}
+//?}
+
+// configure the maven publication
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			artifactId = project.archives_base_name
+			from components.java
+		}
+	}
+
+	// See https://docs.gradle.org/current/userguide/publishing_maven.html for information on how to set up publishing.
+	repositories {
+		// Add repositories to publish to here.
+		// Notice: This block does NOT have the same function as the block in the top level.
+		// The repositories here will be used for publishing your artifact, not for
+		// retrieving dependencies.
+	}
+}
