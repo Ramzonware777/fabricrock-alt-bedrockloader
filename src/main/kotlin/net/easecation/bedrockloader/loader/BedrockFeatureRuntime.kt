@@ -6,6 +6,7 @@ import net.easecation.bedrockloader.bedrock.definition.StructureTemplateFeatureD
 import net.easecation.bedrockloader.loader.context.BedrockPackContext
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.command.ServerCommandSource
 import net.minecraft.server.world.ServerWorld
@@ -22,6 +23,9 @@ import kotlin.math.max
 import kotlin.math.min
 
 object BedrockFeatureRuntime {
+    private const val MAX_CHUNKS_PER_TICK = 1
+    private const val MAX_PLACEMENTS_PER_CHUNK = 1
+
     private data class RuntimeFeatureRule(
         val ruleId: Identifier,
         val structureTemplateFeatureId: Identifier,
@@ -44,6 +48,13 @@ object BedrockFeatureRuntime {
         val structureBytes: ByteArray?
     )
 
+    private data class PendingChunk(
+        val world: ServerWorld,
+        val chunkX: Int,
+        val chunkZ: Int,
+        val chunkKey: Long
+    )
+
     @Volatile
     private var registered = false
 
@@ -59,9 +70,21 @@ object BedrockFeatureRuntime {
     private val missingStructureWarnings = Collections.synchronizedSet(mutableSetOf<String>())
     private val placeStructureWarnings = Collections.synchronizedSet(mutableSetOf<String>())
 
+    @Volatile
+    private var suppressChunkCapture = false
+
+    private val queueLock = Any()
+    private val pendingChunks = ArrayDeque<PendingChunk>()
     private val processedChunksByWorld = Collections.synchronizedMap(mutableMapOf<Identifier, MutableSet<Long>>())
+    private val queuedChunksByWorld = Collections.synchronizedMap(mutableMapOf<Identifier, MutableSet<Long>>())
 
     fun initialize(context: BedrockPackContext) {
+        synchronized(queueLock) {
+            pendingChunks.clear()
+        }
+        processedChunksByWorld.clear()
+        queuedChunksByWorld.clear()
+
         val behavior = context.behavior
         if (behavior.featureRules.isEmpty() || behavior.structureTemplateFeatures.isEmpty()) {
             runtimeRules = emptyList()
@@ -98,6 +121,9 @@ object BedrockFeatureRuntime {
             ServerChunkEvents.CHUNK_LOAD.register(ServerChunkEvents.Load { world, chunk ->
                 handleChunkLoad(world, chunk)
             })
+            ServerTickEvents.END_SERVER_TICK.register { server ->
+                processPendingChunks(server)
+            }
             registered = true
         }
     }
@@ -140,8 +166,12 @@ object BedrockFeatureRuntime {
         featureRules.forEach { (ruleId, rule) ->
             val placesFeatureId = parseFeatureIdentifierSafe(rule.description?.placesFeature) ?: return@forEach
             val compiledFeature = compiledFeatures[placesFeatureId] ?: return@forEach
+            if (compiledFeature.structureBytes == null) return@forEach
+
             val distribution = asMap(rule.resolvedDistribution()) ?: emptyMap()
             val placementPass = rule.conditions?.placementPass?.lowercase() ?: "surface_pass"
+            if (placementPass != "surface_pass" && placementPass != "surface_structures_pass") return@forEach
+
             val iterations = (distribution["iterations"] as? Number)?.toInt()?.coerceIn(1, 64) ?: 1
             val scatterChance = parseScatterChance(distribution["scatter_chance"])
             val xExtent = parseExtent(distribution["x"])
@@ -196,30 +226,70 @@ object BedrockFeatureRuntime {
 
     private fun handleChunkLoad(world: ServerWorld, chunk: WorldChunk) {
         if (runtimeRules.isEmpty()) return
+        if (suppressChunkCapture) return
 
         val worldKey = world.registryKey.value
         val processed = processedChunksByWorld.computeIfAbsent(worldKey) { Collections.synchronizedSet(mutableSetOf()) }
         val chunkKey = toChunkKey(chunk.pos.x, chunk.pos.z)
-        if (!processed.add(chunkKey)) return
+        if (processed.contains(chunkKey)) return
 
+        val queued = queuedChunksByWorld.computeIfAbsent(worldKey) { Collections.synchronizedSet(mutableSetOf()) }
+        if (!queued.add(chunkKey)) return
+
+        synchronized(queueLock) {
+            pendingChunks.addLast(
+                PendingChunk(
+                    world = world,
+                    chunkX = chunk.pos.x,
+                    chunkZ = chunk.pos.z,
+                    chunkKey = chunkKey
+                )
+            )
+        }
+    }
+
+    private fun processPendingChunks(server: MinecraftServer) {
+        if (runtimeRules.isEmpty()) return
+        repeat(MAX_CHUNKS_PER_TICK) {
+            val pending = synchronized(queueLock) {
+                if (pendingChunks.isEmpty()) null else pendingChunks.removeFirst()
+            } ?: return
+
+            val worldKey = pending.world.registryKey.value
+            queuedChunksByWorld[worldKey]?.remove(pending.chunkKey)
+
+            val processed = processedChunksByWorld.computeIfAbsent(worldKey) { Collections.synchronizedSet(mutableSetOf()) }
+            if (!processed.add(pending.chunkKey)) return@repeat
+            if (pending.world.server !== server) return@repeat
+
+            processChunkRules(pending.world, pending.chunkX, pending.chunkZ)
+        }
+    }
+
+    private fun processChunkRules(world: ServerWorld, chunkX: Int, chunkZ: Int) {
         val random = world.random
+        var placedInChunk = 0
         runtimeRules.forEach { rule ->
+            if (placedInChunk >= MAX_PLACEMENTS_PER_CHUNK) return
             if (rule.scatterChance <= 0.0) return@forEach
             repeat(rule.iterations) {
+                if (placedInChunk >= MAX_PLACEMENTS_PER_CHUNK) return@forEach
                 if (random.nextDouble() > rule.scatterChance) return@repeat
 
-                val x = chunk.pos.startX + randomBetween(rule.xMin, rule.xMax, random.nextInt())
-                val z = chunk.pos.startZ + randomBetween(rule.zMin, rule.zMax, random.nextInt())
+                val x = (chunkX shl 4) + randomBetween(rule.xMin, rule.xMax, random.nextInt())
+                val z = (chunkZ shl 4) + randomBetween(rule.zMin, rule.zMax, random.nextInt())
                 val y = resolveY(world, x, z, rule.ySpec)
                 val pos = BlockPos(x, y, z)
                 if (!matchesBiomeFilter(rule.biomeFilter, world, pos)) return@repeat
 
-                placeStructure(world, rule, x, y, z)
+                if (placeStructure(world, rule, x, y, z)) {
+                    placedInChunk++
+                }
             }
         }
     }
 
-    private fun placeStructure(world: ServerWorld, rule: RuntimeFeatureRule, x: Int, y: Int, z: Int) {
+    private fun placeStructure(world: ServerWorld, rule: RuntimeFeatureRule, x: Int, y: Int, z: Int): Boolean {
         val structureFeature = compiledFeatures[rule.structureTemplateFeatureId]
         if (structureFeature?.structureBytes == null) {
             val key = rule.structureTemplateFeatureId.toString()
@@ -228,7 +298,7 @@ object BedrockFeatureRuntime {
                     "[Features] Structure bytes missing for ${rule.structureTemplateFeatureId}; cannot place ${rule.structureId}"
                 )
             }
-            return
+            return false
         }
 
         val command = "place structure ${rule.structureId} $x $y $z"
@@ -238,15 +308,20 @@ object BedrockFeatureRuntime {
             .withSilent()
             .withLevel(2)
 
-        runCatching {
+        suppressChunkCapture = true
+        return try {
             executeCommand(world.server, source, command)
-        }.onFailure { throwable ->
+            true
+        } catch (throwable: Throwable) {
             val key = "${rule.ruleId}|${rule.structureId}"
             if (placeStructureWarnings.add(key)) {
                 BedrockLoader.logger.warn(
                     "[Features] Failed to place structure ${rule.structureId} from rule ${rule.ruleId}: ${throwable.message}"
                 )
             }
+            false
+        } finally {
+            suppressChunkCapture = false
         }
     }
 
