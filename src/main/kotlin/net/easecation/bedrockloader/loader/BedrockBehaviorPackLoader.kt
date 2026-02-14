@@ -42,6 +42,7 @@ class BedrockBehaviorPackLoader(
         context.packs.forEach { packContext ->
             loadPackContent(packContext)
         }
+        BedrockFunctionRuntime.initialize(context)
     }
 
     /**

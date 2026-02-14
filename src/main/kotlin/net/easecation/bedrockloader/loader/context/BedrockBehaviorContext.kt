@@ -14,6 +14,9 @@ class BedrockBehaviorContext {
     val spawnRules: MutableMap<Identifier, SpawnRulesDefinition.SpawnRules> = mutableMapOf()
     val featureRules: MutableMap<Identifier, FeatureRuleDefinition.FeatureRule> = mutableMapOf()
     val structureTemplateFeatures: MutableMap<Identifier, StructureTemplateFeatureDefinition.StructureTemplateFeature> = mutableMapOf()
+    val functions: MutableMap<String, List<String>> = mutableMapOf()
+    val tickFunctions: MutableList<String> = mutableListOf()
+    val loadFunctions: MutableList<String> = mutableListOf()
 
     fun putAll(other: BedrockBehaviorContext) {
         blocks.putAll(other.blocks)
@@ -21,6 +24,9 @@ class BedrockBehaviorContext {
         spawnRules.putAll(other.spawnRules)
         featureRules.putAll(other.featureRules)
         structureTemplateFeatures.putAll(other.structureTemplateFeatures)
+        functions.putAll(other.functions)
+        tickFunctions.addAll(other.tickFunctions)
+        loadFunctions.addAll(other.loadFunctions)
     }
 
 }

@@ -1,5 +1,6 @@
 package net.easecation.bedrockloader.loader.deserializer
 
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.stream.JsonReader
 import net.easecation.bedrockloader.BedrockLoader
@@ -11,9 +12,10 @@ import net.easecation.bedrockloader.bedrock.definition.StructureTemplateFeatureD
 import net.easecation.bedrockloader.loader.context.BedrockBehaviorContext
 import net.easecation.bedrockloader.util.GsonUtil
 import net.easecation.bedrockloader.util.normalizeIdentifier
-import java.io.InputStream
 import net.minecraft.util.Identifier
+import java.io.InputStream
 import java.io.InputStreamReader
+import java.nio.charset.StandardCharsets
 import java.util.zip.ZipFile
 
 object BedrockBehaviorDeserializer : PackDeserializer<BedrockBehaviorContext> {
@@ -25,13 +27,13 @@ object BedrockBehaviorDeserializer : PackDeserializer<BedrockBehaviorContext> {
     override fun deserialize(file: ZipFile, pathPrefix: String): BedrockBehaviorContext {
         val context = BedrockBehaviorContext()
 
-        fun parseJsonObject(stream: InputStream, name: String): JsonObject? {
+        fun parseJsonElement(stream: InputStream, name: String): JsonElement? {
             return try {
                 InputStreamReader(stream).use { reader ->
                     val jsonReader = JsonReader(reader)
                     jsonReader.isLenient = true
-                    val root: JsonObject? = GsonUtil.GSON.fromJson(jsonReader, JsonObject::class.java)
-                    if (root == null) {
+                    val root: JsonElement? = GsonUtil.GSON.fromJson(jsonReader, JsonElement::class.java)
+                    if (root == null || root.isJsonNull) {
                         BedrockLoader.logger.warn("Skipping empty behavior JSON: $name")
                     }
                     root
@@ -40,6 +42,15 @@ object BedrockBehaviorDeserializer : PackDeserializer<BedrockBehaviorContext> {
                 BedrockLoader.logger.error("Error parsing behavior JSON: $name", e)
                 null
             }
+        }
+
+        fun parseJsonObject(stream: InputStream, name: String): JsonObject? {
+            val root = parseJsonElement(stream, name) ?: return null
+            if (!root.isJsonObject) {
+                BedrockLoader.logger.warn("Expected JSON object in behavior file, found ${root.javaClass.simpleName}: $name")
+                return null
+            }
+            return root.asJsonObject
         }
 
         fun parseIdentifierSafe(raw: String?): Identifier? {
@@ -59,6 +70,45 @@ object BedrockBehaviorDeserializer : PackDeserializer<BedrockBehaviorContext> {
                 .getOrNull()
         }
 
+        fun normalizeFunctionName(raw: String?): String? {
+            if (raw.isNullOrBlank()) return null
+
+            var value = raw.trim().replace('\\', '/')
+            if (value.contains(':')) {
+                value = value.substringAfter(':')
+            }
+            value = value.removePrefix("/")
+            value = value.removePrefix("functions/")
+            value = value.removeSuffix(".mcfunction")
+            value = value.trim('/')
+            if (value.isBlank()) return null
+            return value.lowercase()
+        }
+
+        fun parseFunctionTagReferences(root: JsonElement?, name: String): List<String> {
+            if (root == null || root.isJsonNull) return emptyList()
+            val valuesElement = when {
+                root.isJsonObject -> root.asJsonObject.get("values")
+                root.isJsonArray -> root
+                root.isJsonPrimitive -> root
+                else -> null
+            } ?: return emptyList()
+
+            val rawRefs: List<String> = when {
+                valuesElement.isJsonArray -> valuesElement.asJsonArray
+                    .mapNotNull { element -> element.takeIf { it.isJsonPrimitive }?.asString }
+
+                valuesElement.isJsonPrimitive -> listOf(valuesElement.asString)
+                else -> emptyList()
+            }
+
+            val normalizedRefs = rawRefs.mapNotNull(::normalizeFunctionName).distinct()
+            if (rawRefs.isNotEmpty() && normalizedRefs.isEmpty()) {
+                BedrockLoader.logger.warn("No valid function references found in $name")
+            }
+            return normalizedRefs
+        }
+
         val entries = file.entries()
         while (entries.hasMoreElements()) {
             val entry = entries.nextElement()
@@ -72,7 +122,35 @@ object BedrockBehaviorDeserializer : PackDeserializer<BedrockBehaviorContext> {
             // 移除前缀后的相对路径
             val relativeName = if (pathPrefix.isNotEmpty()) name.removePrefix(pathPrefix) else name
 
-            if (relativeName.startsWith("entities/") && relativeName.endsWith(".json")) {
+            if (relativeName.startsWith("functions/") && relativeName.endsWith(".mcfunction")) {
+                file.getInputStream(entry).use { stream ->
+                    try {
+                        val functionName = normalizeFunctionName(relativeName) ?: return@use
+                        val lines = stream.bufferedReader(StandardCharsets.UTF_8).use { it.readLines() }
+                        context.functions[functionName] = lines
+                    } catch (e: Exception) {
+                        BedrockLoader.logger.error("Error parsing function file: $name", e)
+                    }
+                }
+            } else if (relativeName.equals("functions/tick.json", ignoreCase = true)) {
+                file.getInputStream(entry).use { stream ->
+                    try {
+                        val root = parseJsonElement(stream, name)
+                        context.tickFunctions.addAll(parseFunctionTagReferences(root, name))
+                    } catch (e: Exception) {
+                        BedrockLoader.logger.error("Error parsing tick function tag: $name", e)
+                    }
+                }
+            } else if (relativeName.equals("functions/load.json", ignoreCase = true)) {
+                file.getInputStream(entry).use { stream ->
+                    try {
+                        val root = parseJsonElement(stream, name)
+                        context.loadFunctions.addAll(parseFunctionTagReferences(root, name))
+                    } catch (e: Exception) {
+                        BedrockLoader.logger.error("Error parsing load function tag: $name", e)
+                    }
+                }
+            } else if (relativeName.startsWith("entities/") && relativeName.endsWith(".json")) {
                 file.getInputStream(entry).use { stream ->
                     try {
                         val root = parseJsonObject(stream, name) ?: return@use
@@ -145,6 +223,13 @@ object BedrockBehaviorDeserializer : PackDeserializer<BedrockBehaviorContext> {
                 }
             }
         }
+        val normalizedTickFunctions = context.tickFunctions.mapNotNull(::normalizeFunctionName).distinct()
+        context.tickFunctions.clear()
+        context.tickFunctions.addAll(normalizedTickFunctions)
+
+        val normalizedLoadFunctions = context.loadFunctions.mapNotNull(::normalizeFunctionName).distinct()
+        context.loadFunctions.clear()
+        context.loadFunctions.addAll(normalizedLoadFunctions)
         return context
     }
 
