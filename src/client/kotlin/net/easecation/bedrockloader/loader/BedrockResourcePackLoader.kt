@@ -8,6 +8,7 @@ import net.easecation.bedrockloader.bedrock.block.component.ComponentMaterialIns
 import net.easecation.bedrockloader.bedrock.definition.BlockResourceDefinition
 import net.easecation.bedrockloader.bedrock.definition.EntityRenderControllerDefinition
 import net.easecation.bedrockloader.bedrock.definition.EntityResourceDefinition
+import net.easecation.bedrockloader.bedrock.definition.GeometryDefinition
 import net.easecation.bedrockloader.java.definition.JavaBlockTag
 import net.easecation.bedrockloader.java.definition.JavaMCMeta
 import net.easecation.bedrockloader.java.definition.VanillaBlockTagsData
@@ -18,6 +19,7 @@ import net.easecation.bedrockloader.render.BedrockMaterialInstance
 import net.easecation.bedrockloader.render.VersionCompat
 import net.easecation.bedrockloader.render.renderer.BlockEntityDataDrivenRenderer
 import net.easecation.bedrockloader.render.renderer.EntityDataDrivenRenderer
+import net.easecation.bedrockloader.util.MolangExpressionEvaluator
 import net.easecation.bedrockloader.util.GsonUtil
 import net.fabricmc.fabric.api.blockrenderlayer.v1.BlockRenderLayerMap
 import net.fabricmc.fabric.api.client.rendering.v1.EntityRendererRegistry
@@ -54,6 +56,7 @@ class BedrockResourcePackLoader(
         context.resource.geometries.forEach { (key, value) ->
             BedrockAddonsRegistryClient.geometries[key] = BedrockGeometryModel.Factory(value)
         }
+        registerBuiltinProjectileGeometryFallbacks()
         // Blocks
         for ((identifier, blockBehaviour) in context.behavior.blocks) {
             val block = context.resource.blocks[identifier]
@@ -598,45 +601,9 @@ class BedrockResourcePackLoader(
         identifier: Identifier,
         clientEntity: EntityResourceDefinition.ClientEntityDescription?
     ) {
-        if (clientEntity == null) return
-
-        val animationMap = clientEntity.animations ?: return
-        val scripts = clientEntity.scripts ?: return
-        val animateList = scripts.animate ?: return
-
-        // è§£æž scripts.animate åˆ—è¡¨
-        val autoPlayList = animateList.mapNotNull { item ->
-            when (item) {
-                is String -> item
-                is Map<*, *> -> item.keys.firstOrNull()?.toString()
-                else -> null
-            }
-        }
-
-        if (autoPlayList.isEmpty()) return
-
-        // æ”¶é›†éœ€è¦çš„åŠ¨ç”»æ•°æ®
-        val animations = mutableMapOf<String, net.easecation.bedrockloader.bedrock.definition.AnimationDefinition.Animation>()
-        for (alias in autoPlayList) {
-            val animId = animationMap[alias] ?: continue
-            val anim = context.resource.animations[animId]
-            if (anim != null) {
-                animations[animId] = anim
-            } else {
-                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Animation not found: $animId for entity $identifier")
-            }
-        }
-
-        if (animations.isEmpty()) return
-
-        // æ³¨å†ŒåŠ¨ç”»é…ç½®
-        BedrockAddonsRegistryClient.entityAnimationConfigs[identifier] = EntityAnimationConfig(
-            animationMap = animationMap,
-            animations = animations,
-            autoPlayList = autoPlayList
-        )
-
-        BedrockLoader.logger.debug("[BedrockResourcePackLoader] Registered animation config for entity $identifier: ${autoPlayList.size} auto-play animations")
+        val config = buildAnimationConfig(identifier, clientEntity, "entity") ?: return
+        BedrockAddonsRegistryClient.entityAnimationConfigs[identifier] = config
+        BedrockLoader.logger.debug("[BedrockResourcePackLoader] Registered animation config for entity $identifier: ${config.autoPlayList.size} auto-play animations")
     }
 
     /**
@@ -649,45 +616,149 @@ class BedrockResourcePackLoader(
         identifier: Identifier,
         clientEntity: EntityResourceDefinition.ClientEntityDescription?
     ) {
-        if (clientEntity == null) return
+        val config = buildAnimationConfig(identifier, clientEntity, "block entity") ?: return
+        BedrockAddonsRegistryClient.blockEntityAnimationConfigs[identifier] = config
+        BedrockLoader.logger.info("[BedrockResourcePackLoader] Registered animation config for block entity $identifier: ${config.autoPlayList.size} auto-play animations")
+    }
 
-        val animationMap = clientEntity.animations ?: return
-        val scripts = clientEntity.scripts ?: return
-        val animateList = scripts.animate ?: return
+    private fun buildAnimationConfig(
+        identifier: Identifier,
+        clientEntity: EntityResourceDefinition.ClientEntityDescription?,
+        ownerName: String
+    ): EntityAnimationConfig? {
+        if (clientEntity == null) return null
 
-        // è§£æž scripts.animate åˆ—è¡¨
-        val autoPlayList = animateList.mapNotNull { item ->
+        val animationMap = (clientEntity.animations ?: emptyMap()).toMutableMap()
+        val rootAliases = LinkedHashSet<String>()
+        rootAliases.addAll(parseAnimateAliases(clientEntity.scripts?.animate))
+
+        clientEntity.animation_controllers.orEmpty().forEach { reference ->
+            if (!evaluateCondition(reference.condition)) {
+                return@forEach
+            }
+            val alias = reference.alias?.takeIf { it.isNotBlank() } ?: reference.id
+            animationMap.putIfAbsent(alias, reference.id)
+            rootAliases += alias
+        }
+
+        if (animationMap.isEmpty() || rootAliases.isEmpty()) return null
+
+        val autoPlayList = resolveAutoPlayAliases(identifier, rootAliases.toList(), animationMap)
+        if (autoPlayList.isEmpty()) return null
+
+        val animations = mutableMapOf<String, net.easecation.bedrockloader.bedrock.definition.AnimationDefinition.Animation>()
+        autoPlayList.forEach { alias ->
+            val animId = animationMap[alias] ?: return@forEach
+            val anim = context.resource.animations[animId]
+            if (anim != null) {
+                animations[animId] = anim
+            } else {
+                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Animation not found: $animId for $ownerName $identifier")
+            }
+        }
+        if (animations.isEmpty()) return null
+
+        return EntityAnimationConfig(
+            animationMap = animationMap,
+            animations = animations,
+            autoPlayList = autoPlayList
+        )
+    }
+
+    private fun parseAnimateAliases(animate: List<Any>?): List<String> {
+        return animate?.mapNotNull { item ->
             when (item) {
                 is String -> item
                 is Map<*, *> -> item.keys.firstOrNull()?.toString()
                 else -> null
             }
-        }
+        } ?: emptyList()
+    }
 
-        if (autoPlayList.isEmpty()) return
+    private fun resolveAutoPlayAliases(
+        identifier: Identifier,
+        rootAliases: List<String>,
+        animationMap: MutableMap<String, String>
+    ): List<String> {
+        val resolvedAliases = linkedSetOf<String>()
+        val pending = ArrayDeque<String>()
+        val visitedAliases = mutableSetOf<String>()
+        val visitedControllers = mutableSetOf<String>()
 
-        // æ”¶é›†éœ€è¦çš„åŠ¨ç”»æ•°æ®
-        val animations = mutableMapOf<String, net.easecation.bedrockloader.bedrock.definition.AnimationDefinition.Animation>()
-        for (alias in autoPlayList) {
-            val animId = animationMap[alias] ?: continue
-            val anim = context.resource.animations[animId]
-            if (anim != null) {
-                animations[animId] = anim
-            } else {
-                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Animation not found: $animId for block entity $identifier")
+        rootAliases.filter { it.isNotBlank() }.forEach { pending.add(it) }
+
+        while (pending.isNotEmpty()) {
+            val alias = pending.removeFirst()
+            if (!visitedAliases.add(alias)) continue
+
+            val mappedId = animationMap[alias] ?: alias
+            when {
+                context.resource.animations.containsKey(mappedId) -> {
+                    animationMap.putIfAbsent(alias, mappedId)
+                    resolvedAliases += alias
+                }
+                isControllerId(mappedId) -> {
+                    if (!visitedControllers.add(mappedId)) continue
+                    val controller = context.resource.animationControllers[mappedId]
+                    if (controller == null) {
+                        BedrockLoader.logger.warn("[BedrockResourcePackLoader] Animation controller not found: $mappedId for entity $identifier")
+                        continue
+                    }
+                    extractControllerAnimationAliases(controller).forEach { pending.add(it) }
+                }
+                animationMap.containsKey(mappedId) && mappedId != alias -> pending.add(mappedId)
+                else -> {
+                    val fallback = builtinAnimation(mappedId)
+                    if (fallback != null) {
+                        context.resource.animations.putIfAbsent(mappedId, fallback)
+                        animationMap.putIfAbsent(alias, mappedId)
+                        resolvedAliases += alias
+                    }
+                }
             }
         }
 
-        if (animations.isEmpty()) return
+        return resolvedAliases.toList()
+    }
 
-        // æ³¨å†ŒåŠ¨ç”»é…ç½®åˆ°æ–¹å—å®žä½“ä¸“ç”¨å­˜å‚¨
-        BedrockAddonsRegistryClient.blockEntityAnimationConfigs[identifier] = EntityAnimationConfig(
-            animationMap = animationMap,
-            animations = animations,
-            autoPlayList = autoPlayList
-        )
+    private fun isControllerId(id: String): Boolean {
+        return id.startsWith("controller.animation.", ignoreCase = true) ||
+            context.resource.animationControllers.containsKey(id)
+    }
 
-        BedrockLoader.logger.info("[BedrockResourcePackLoader] Registered animation config for block entity $identifier: ${autoPlayList.size} auto-play animations")
+    private fun extractControllerAnimationAliases(
+        controller: net.easecation.bedrockloader.bedrock.definition.EntityAnimationControllerDefinition.AnimationController
+    ): List<String> {
+        val aliases = linkedSetOf<String>()
+        controller.states.values.forEach { state ->
+            state.animations.orEmpty().forEach { animationEntry ->
+                when (animationEntry) {
+                    is String -> aliases += animationEntry
+                    is Map<*, *> -> {
+                        animationEntry.keys.firstOrNull()?.toString()?.let { aliases += it }
+                    }
+                }
+            }
+        }
+        return aliases.toList()
+    }
+
+    private fun builtinAnimation(animationId: String): net.easecation.bedrockloader.bedrock.definition.AnimationDefinition.Animation? {
+        return when (animationId) {
+            "animation.arrow.move",
+            "animation.wither_skull.move" -> net.easecation.bedrockloader.bedrock.definition.AnimationDefinition.Animation(
+                loop = net.easecation.bedrockloader.bedrock.definition.AnimationDefinition.LoopMode.Loop,
+                animation_length = null,
+                bones = null
+            )
+            else -> null
+        }
+    }
+
+    private fun evaluateCondition(condition: String?): Boolean {
+        if (condition.isNullOrBlank()) return true
+        val result = MolangExpressionEvaluator.evaluate(condition)
+        return result != null && result != 0.0
     }
 
     /**
@@ -699,10 +770,12 @@ class BedrockResourcePackLoader(
         if (scale == null) return 1.0f
         return when (scale) {
             is Number -> scale.toFloat()
-            is String -> scale.toFloatOrNull() ?: run {
-                BedrockLoader.logger.warn("[BedrockResourcePackLoader] Molang scale expression not supported, using default 1.0: $scale")
-                1.0f
-            }
+            is String -> scale.toFloatOrNull()
+                ?: MolangExpressionEvaluator.evaluate(scale)?.toFloat()
+                ?: run {
+                    BedrockLoader.logger.warn("[BedrockResourcePackLoader] Molang scale expression not supported, using default 1.0: $scale")
+                    1.0f
+                }
             else -> 1.0f
         }
     }
@@ -750,20 +823,32 @@ class BedrockResourcePackLoader(
             return null
         }
 
-        val controllers = clientEntity.render_controllers.orEmpty()
-        if (controllers.size > 1) {
-            BedrockLoader.logger.warn("[BedrockResourcePackLoader] Entity {} has more than one render controller, only the first supported one will be used.", clientEntity.identifier)
+        val selectedController = selectRenderControllerReference(clientEntity)
+        if (selectedController != null) {
+            val renderController = context.resource.renderControllers[selectedController.id]
+            if (renderController != null) {
+                return createRenderControllerModel(identifier, clientEntity, renderController)
+            }
         }
 
-        for (controller in controllers) {
-            val renderController = context.resource.renderControllers[controller.id] ?: continue
-            return createRenderControllerModel(identifier, clientEntity, renderController)
-        }
-
-        if (controllers.isNotEmpty()) {
+        if (clientEntity.render_controllers.orEmpty().isNotEmpty()) {
             BedrockLoader.logger.debug("[BedrockResourcePackLoader] Render controller not found for entity {}, using client_entity defaults", clientEntity.identifier)
         }
         return createDefaultClientEntityModel(identifier, clientEntity)
+    }
+
+    private fun selectRenderControllerReference(
+        clientEntity: EntityResourceDefinition.ClientEntityDescription
+    ): EntityResourceDefinition.RenderControllerReference? {
+        val controllers = clientEntity.render_controllers.orEmpty()
+        if (controllers.isEmpty()) return null
+
+        val existing = controllers.filter { context.resource.renderControllers.containsKey(it.id) }
+        if (existing.isEmpty()) return null
+
+        existing.firstOrNull { evaluateCondition(it.condition) }?.let { return it }
+        existing.firstOrNull { it.condition.isNullOrBlank() }?.let { return it }
+        return existing.first()
     }
 
     private fun extractAlias(molang: String, lowercasePrefix: String, uppercasePrefix: String): String {
@@ -813,6 +898,13 @@ class BedrockResourcePackLoader(
             return requestedGeometry
         }
 
+        val caseInsensitive = BedrockAddonsRegistryClient.geometries.keys.firstOrNull {
+            it.equals(requestedGeometry, ignoreCase = true)
+        }
+        if (caseInsensitive != null) {
+            return caseInsensitive
+        }
+
         val entityPath = identifier.path
         val candidates = listOf(
             "geometry.$entityPath",
@@ -844,6 +936,74 @@ class BedrockResourcePackLoader(
         }
 
         return null
+    }
+
+    private fun registerBuiltinProjectileGeometryFallbacks() {
+        registerBuiltinArrowGeometryFallback("geometry.arrow")
+    }
+
+    private fun registerBuiltinArrowGeometryFallback(geometryId: String) {
+        if (BedrockAddonsRegistryClient.geometries.containsKey(geometryId)) return
+
+        val arrowBody = GeometryDefinition.Cube(
+            inflate = null,
+            mirror = null,
+            origin = listOf(-0.5, -0.5, -8.0),
+            pivot = null,
+            reset = null,
+            rotation = null,
+            size = listOf(1.0, 1.0, 16.0),
+            uv = GeometryDefinition.Uv.UvBox(listOf(0, 0))
+        )
+        val arrowFin1 = GeometryDefinition.Cube(
+            inflate = null,
+            mirror = null,
+            origin = listOf(-2.0, -1.5, -6.0),
+            pivot = null,
+            reset = null,
+            rotation = null,
+            size = listOf(4.0, 0.0, 4.0),
+            uv = GeometryDefinition.Uv.UvBox(listOf(0, 4))
+        )
+        val arrowFin2 = GeometryDefinition.Cube(
+            inflate = null,
+            mirror = null,
+            origin = listOf(-2.0, -1.5, -6.0),
+            pivot = null,
+            reset = null,
+            rotation = listOf(90.0, 0.0, 0.0),
+            size = listOf(4.0, 0.0, 4.0),
+            uv = GeometryDefinition.Uv.UvBox(listOf(0, 4))
+        )
+        val rootBone = GeometryDefinition.Bone(
+            binding = null,
+            cubes = listOf(arrowBody, arrowFin1, arrowFin2),
+            debug = null,
+            inflate = null,
+            locators = null,
+            mirror = null,
+            name = "root",
+            parent = null,
+            pivot = listOf(0.0, 0.0, 0.0),
+            poly_mesh = null,
+            render_group_id = null,
+            rotation = null,
+            texture_meshes = null
+        )
+        val model = GeometryDefinition.Model(
+            description = GeometryDefinition.Description(
+                identifier = geometryId,
+                texture_width = 32,
+                texture_height = 32,
+                visible_bounds_offset = listOf(0.0, 0.0, 0.0),
+                visible_bounds_width = 1.0,
+                visible_bounds_height = 1.0
+            ),
+            bones = listOf(rootBone),
+            cape = null
+        )
+        BedrockAddonsRegistryClient.geometries[geometryId] = BedrockGeometryModel.Factory(model)
+        BedrockLoader.logger.info("[BedrockResourcePackLoader] Registered builtin projectile geometry fallback: $geometryId")
     }
 
     private fun createDefaultClientEntityModel(

@@ -16,6 +16,7 @@ data class EntityResourceDefinition(
 
     data class ClientEntityDescription(
             val animations: Map<String, String>?,
+            val animation_controllers: List<AnimationControllerReference>?,
             val enable_attachables: Boolean?,
             val geometry: Map<String, String>?,
             val queryable_geometry: String?,
@@ -32,6 +33,53 @@ data class EntityResourceDefinition(
             val spawn_egg: SpawnEgg?,
             val textures: Map<String, String>?
     )
+
+    data class AnimationControllerReference(
+            val alias: String? = null,
+            val id: String,
+            val condition: String? = null
+    ) {
+        class Deserializer : JsonDeserializer<AnimationControllerReference> {
+            override fun deserialize(
+                json: JsonElement,
+                typeOfT: Type,
+                context: JsonDeserializationContext
+            ): AnimationControllerReference {
+                return when {
+                    json.isJsonPrimitive && json.asJsonPrimitive.isString -> {
+                        val controllerId = json.asString
+                        AnimationControllerReference(null, controllerId, null)
+                    }
+                    json.isJsonObject -> {
+                        val obj = json.asJsonObject
+                        if (obj.entrySet().isEmpty()) {
+                            throw JsonParseException("animation_controller object cannot be empty")
+                        }
+                        val entry = obj.entrySet().first()
+                        val key = entry.key
+                        val value = entry.value.asString
+
+                        // Common format:
+                        // { "move": "controller.animation.humanoid.move" }
+                        if (value.startsWith("controller.animation.", ignoreCase = true)) {
+                            return AnimationControllerReference(key, value, null)
+                        }
+
+                        // Fallback format with condition:
+                        // { "controller.animation.xxx": "query.is_powered" }
+                        if (key.startsWith("controller.animation.", ignoreCase = true)) {
+                            return AnimationControllerReference(null, key, value)
+                        }
+
+                        AnimationControllerReference(key, value, null)
+                    }
+                    else -> {
+                        throw JsonParseException("Invalid animation_controller format: expected string or object, got ${json.javaClass.simpleName}")
+                    }
+                }
+            }
+        }
+    }
 
     data class RenderControllerReference(
             val id: String,

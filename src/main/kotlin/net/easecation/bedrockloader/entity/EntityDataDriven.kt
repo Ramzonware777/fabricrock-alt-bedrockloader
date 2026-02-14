@@ -73,11 +73,12 @@ class EntityDataDriven(
 
     companion object {
         fun buildEntityType(identifier: Identifier): EntityType<EntityDataDriven> {
+            val spawnGroup = BedrockAddonsRegistry.entitySpawnGroups[identifier] ?: SpawnGroup.CREATURE
             return EntityType.Builder.create({ type, world ->
                 val components = BedrockAddonsRegistry.entityComponents[identifier]
                     ?: throw IllegalStateException("[EntityDataDriven] Entity $identifier has no components")
                 EntityDataDriven(identifier, components, type, world)
-            }, SpawnGroup.CREATURE)
+            }, spawnGroup)
                 .dimensions(1f, 1f)
                 .build(identifier.toString())
         }
@@ -541,10 +542,12 @@ class EntityDataDriven(
             "actor_health" -> compareNumbers(health.toDouble(), (value as? Number)?.toDouble() ?: return false, operator)
             "is_variant" -> {
                 val expected = (value as? Number)?.toInt() ?: return false
-                val actual = when (val variant = activeComponents.minecraftVariant) {
-                    is Number -> variant.toInt()
-                    else -> null
-                } ?: return false
+                val actual = extractComponentIntValue(activeComponents.minecraftVariant) ?: return false
+                compareNumbers(actual.toDouble(), expected.toDouble(), operator)
+            }
+            "is_mark_variant" -> {
+                val expected = (value as? Number)?.toInt() ?: return false
+                val actual = extractComponentIntValue(activeComponents.minecraftMarkVariant) ?: return false
                 compareNumbers(actual.toDouble(), expected.toDouble(), operator)
             }
             "is_biome" -> {
@@ -573,6 +576,22 @@ class EntityDataDriven(
         }
     }
 
+    private fun extractComponentIntValue(raw: Any?): Int? {
+        return when (raw) {
+            is Number -> raw.toInt()
+            is String -> raw.toIntOrNull()
+            is Map<*, *> -> {
+                val map = toStringAnyMap(raw) ?: return null
+                when (val valueNode = map["value"] ?: map["default"]) {
+                    is Number -> valueNode.toInt()
+                    is String -> valueNode.toIntOrNull()
+                    else -> null
+                }
+            }
+            else -> null
+        }
+    }
+
     private fun hasComponent(componentId: String): Boolean {
         val normalized = componentId.lowercase()
         return when (normalized) {
@@ -580,6 +599,8 @@ class EntityDataDriven(
             "minecraft:attack" -> activeComponents.minecraftAttack != null
             "minecraft:burns_in_daylight" -> activeComponents.minecraftBurnsInDaylight != null
             "minecraft:can_fly" -> activeComponents.minecraftCanFly != null
+            "minecraft:variant" -> activeComponents.minecraftVariant != null
+            "minecraft:mark_variant" -> activeComponents.minecraftMarkVariant != null
             "minecraft:shooter" -> activeComponents.minecraftShooter != null
             "minecraft:behavior.ranged_attack" -> activeComponents.minecraftBehaviorRangedAttack != null
             "minecraft:timer" -> activeComponents.minecraftTimer != null

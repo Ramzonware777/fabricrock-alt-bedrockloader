@@ -3,6 +3,7 @@ package net.easecation.bedrockloader.loader.deserializer
 import net.easecation.bedrockloader.BedrockLoader
 import net.easecation.bedrockloader.bedrock.definition.BlockBehaviourDefinition
 import net.easecation.bedrockloader.bedrock.definition.EntityBehaviourDefinition
+import net.easecation.bedrockloader.bedrock.definition.SpawnRulesDefinition
 import net.easecation.bedrockloader.loader.context.BedrockBehaviorContext
 import net.easecation.bedrockloader.util.GsonUtil
 import net.minecraft.util.Identifier
@@ -51,6 +52,17 @@ object BedrockBehaviorDeserializer : PackDeserializer<BedrockBehaviorContext> {
                         context.blocks[identifier] = blockBehaviour
                     } catch (e: Exception) {
                         BedrockLoader.logger.error("Error parsing behavior block: $name", e)
+                    }
+                }
+            } else if (relativeName.startsWith("spawn_rules/") && relativeName.endsWith(".json")) {
+                file.getInputStream(entry).use { stream ->
+                    try {
+                        val spawnRulesDefinition: SpawnRulesDefinition = GsonUtil.GSON.fromJson(InputStreamReader(stream), SpawnRulesDefinition::class.java)
+                        val spawnRules = spawnRulesDefinition.minecraftSpawnRules
+                        val identifier: Identifier = spawnRules.description.identifier
+                        context.spawnRules[identifier] = spawnRules
+                    } catch (e: Exception) {
+                        BedrockLoader.logger.error("Error parsing spawn rule: $name", e)
                     }
                 }
             }

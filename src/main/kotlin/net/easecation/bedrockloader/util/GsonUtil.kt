@@ -57,6 +57,10 @@ object GsonUtil {
             // entity resource
             .registerTypeAdapter(EntityResourceDefinition.RenderControllerReference::class.java,
                     EntityResourceDefinition.RenderControllerReference.Deserializer())
+            .registerTypeAdapter(
+                EntityResourceDefinition.AnimationControllerReference::class.java,
+                EntityResourceDefinition.AnimationControllerReference.Deserializer()
+            )
             // geometry
             .registerTypeAdapter(GeometryDefinition.Uv::class.java, GeometryDefinition.Uv.Deserializer())
             .registerTypeAdapter(GeometryDefinition.Locator::class.java, GeometryDefinition.Locator.Deserializer())

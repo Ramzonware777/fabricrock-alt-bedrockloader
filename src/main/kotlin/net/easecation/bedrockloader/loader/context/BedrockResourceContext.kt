@@ -15,8 +15,9 @@ class BedrockResourceContext {
     val entities: MutableMap<Identifier, EntityResourceDefinition.ClientEntity> = mutableMapOf()
     val geometries: MutableMap<String, GeometryDefinition.Model> = mutableMapOf()
     val renderControllers: MutableMap<String, EntityRenderControllerDefinition.RenderController> = mutableMapOf()
-    val textureImages: MutableMap<BedrockTexturePath, TextureImage> = mutableMapOf()  // 去除后缀的路径(如textures/block/stone) -> TextureImage(image, type(后缀类型))
-    val animations: MutableMap<String, AnimationDefinition.Animation> = mutableMapOf()  // 动画ID -> 动画数据
+    val animationControllers: MutableMap<String, EntityAnimationControllerDefinition.AnimationController> = mutableMapOf()
+    val textureImages: MutableMap<BedrockTexturePath, TextureImage> = mutableMapOf()
+    val animations: MutableMap<String, AnimationDefinition.Animation> = mutableMapOf()
 
     fun putAll(other: BedrockResourceContext) {
         terrainTexture.putAll(other.terrainTexture)
@@ -24,12 +25,13 @@ class BedrockResourceContext {
         entities.putAll(other.entities)
         geometries.putAll(other.geometries)
         renderControllers.putAll(other.renderControllers)
+        animationControllers.putAll(other.animationControllers)
         textureImages.putAll(other.textureImages)
         itemTexture.putAll(other.itemTexture)
         animations.putAll(other.animations)
     }
 
-    fun terrainTextureToJava(namespace: String, textureKey: String) : JavaTexturePath? {
+    fun terrainTextureToJava(namespace: String, textureKey: String): JavaTexturePath? {
         val textures = terrainTexture[textureKey]?.textures
         val texture = textures?.firstOrNull()?.path
         if (texture == null) {
@@ -42,7 +44,7 @@ class BedrockResourceContext {
         )
     }
 
-    fun itemTextureToJava(namespace: String, textureKey: String) : JavaTexturePath? {
+    fun itemTextureToJava(namespace: String, textureKey: String): JavaTexturePath? {
         val textures = itemTexture[textureKey]?.textures
         val texture = textures?.firstOrNull()?.path
         if (texture == null) {

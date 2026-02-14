@@ -330,7 +330,11 @@ data class BlockContext(
 
         private val orSplitRegex = """\s*\|\|\s*""".toRegex()
         private val andSplitRegex = """\s*&&\s*""".toRegex()
-        private val blockStateRegex = """^\s*q(uery)?\s*\.\s*block_state\s*\(\s*'(?<key>[^']+)'\s*\)\s*(?<operator>==|!=)\s*'(?<value>[^']+)'\s*$""".toRegex()
+        private val blockStateStringRegex = """^\s*q(uery)?\s*\.\s*block_state\s*\(\s*'(?<key>[^']+)'\s*\)\s*(?<operator>==|!=)\s*'(?<value>[^']+)'\s*$""".toRegex()
+        private val blockStateNumericRegex = """^\s*q(uery)?\s*\.\s*block_state\s*\(\s*'(?<key>[^']+)'\s*\)\s*(?<operator>==|!=|>=|<=|>|<)\s*(?<value>-?\d+(?:\.\d+)?)\s*$""".toRegex()
+        private val blockStateModRegex = """^\s*math\s*\.\s*mod\s*\(\s*q(uery)?\s*\.\s*block_state\s*\(\s*'(?<key>[^']+)'\s*\)\s*,\s*(?<mod>-?\d+(?:\.\d+)?)\s*\)\s*(?<operator>==|!=|>=|<=|>|<)\s*(?<value>-?\d+(?:\.\d+)?)\s*$""".toRegex()
+        private val warnedUnsupportedConditions: MutableSet<String> = mutableSetOf()
+        private val warnedUnknownProperties: MutableSet<String> = mutableSetOf()
 
         private val componentsByState: Map<BlockState, BlockComponents>
 
@@ -382,23 +386,66 @@ data class BlockContext(
         }
 
         private fun evalBlockStateCondition(condition: String, state: BlockState): Boolean {
-            val matchResult = blockStateRegex.matchEntire(condition)
-            if (matchResult == null) {
-                BedrockLoader.logger.warn("[BlockDataDriven] Block $identifier contains unsupported permutation block state condition: $condition")
-                return false
+            blockStateStringRegex.matchEntire(condition)?.let { match ->
+                val key = match.groups["key"]?.value ?: return false
+                val operator = match.groups["operator"]?.value ?: return false
+                val value = match.groups["value"]?.value ?: return false
+                val valueName = getPropertyValueName(key, state) ?: return false
+                return when (operator) {
+                    "==" -> valueName == value
+                    "!=" -> valueName != value
+                    else -> false
+                }
             }
-            val key = matchResult.groups["key"]?.value ?: return false
-            val operator = matchResult.groups["operator"]?.value ?: return false
-            val value = matchResult.groups["value"]?.value ?: return false
+
+            blockStateNumericRegex.matchEntire(condition)?.let { match ->
+                val key = match.groups["key"]?.value ?: return false
+                val operator = match.groups["operator"]?.value ?: return false
+                val expected = match.groups["value"]?.value?.toDoubleOrNull() ?: return false
+                val actual = getPropertyNumericValue(key, state) ?: return false
+                return compareNumeric(actual, expected, operator)
+            }
+
+            blockStateModRegex.matchEntire(condition)?.let { match ->
+                val key = match.groups["key"]?.value ?: return false
+                val modBase = match.groups["mod"]?.value?.toDoubleOrNull() ?: return false
+                if (modBase == 0.0) return false
+                val operator = match.groups["operator"]?.value ?: return false
+                val expected = match.groups["value"]?.value?.toDoubleOrNull() ?: return false
+                val actual = getPropertyNumericValue(key, state) ?: return false
+                return compareNumeric(actual % modBase, expected, operator)
+            }
+
+            if (warnedUnsupportedConditions.add(condition)) {
+                BedrockLoader.logger.warn("[BlockDataDriven] Block $identifier contains unsupported permutation block state condition: $condition")
+            }
+            return false
+        }
+
+        private fun getPropertyValueName(key: String, state: BlockState): String? {
             val property = properties[key]
             if (property == null) {
-                BedrockLoader.logger.warn("[BlockDataDriven] Block $identifier contains unknown property in permutation: $key")
-                return false
+                if (warnedUnknownProperties.add(key)) {
+                    BedrockLoader.logger.warn("[BlockDataDriven] Block $identifier contains unknown property in permutation: $key")
+                }
+                return null
             }
-            val valueName = property.getBedrockValueName(state) ?: return false
+            return property.getBedrockValueName(state)
+        }
+
+        private fun getPropertyNumericValue(key: String, state: BlockState): Double? {
+            val valueName = getPropertyValueName(key, state) ?: return null
+            return valueName.toDoubleOrNull()
+        }
+
+        private fun compareNumeric(actual: Double, expected: Double, operator: String): Boolean {
             return when (operator) {
-                "==" -> valueName == value
-                "!=" -> valueName != value
+                "==" -> actual == expected
+                "!=" -> actual != expected
+                ">" -> actual > expected
+                ">=" -> actual >= expected
+                "<" -> actual < expected
+                "<=" -> actual <= expected
                 else -> false
             }
         }

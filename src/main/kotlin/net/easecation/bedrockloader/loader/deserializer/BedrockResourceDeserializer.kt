@@ -202,6 +202,21 @@ object BedrockResourceDeserializer : PackDeserializer<BedrockResourceContext> {
                 }
             }
 
+            if (relativeName.startsWith("animation_controllers/") && relativeName.endsWith(".json")) {
+                file.getInputStream(entry).use { stream ->
+                    try {
+                        val root = GsonUtil.GSON.fromJson(InputStreamReader(stream), JsonObject::class.java)
+                        if (!root.has("animation_controllers")) {
+                            return@use
+                        }
+                        val definition = GsonUtil.GSON.fromJson(root, EntityAnimationControllerDefinition::class.java)
+                        context.animationControllers.putAll(definition.animationControllers)
+                    } catch (e: Exception) {
+                        BedrockLoader.logger.error("Error parsing animation controller: $name", e)
+                    }
+                }
+            }
+
             if (relativeName.endsWith(".animation.json") || (relativeName.startsWith("animations/") && relativeName.endsWith(".json"))) {
                 file.getInputStream(entry).use { stream ->
                     try {

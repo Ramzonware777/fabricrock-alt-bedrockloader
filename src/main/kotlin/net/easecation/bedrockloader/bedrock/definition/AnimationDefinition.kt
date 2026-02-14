@@ -2,6 +2,7 @@ package net.easecation.bedrockloader.bedrock.definition
 
 import com.google.gson.*
 import net.easecation.bedrockloader.BedrockLoader
+import net.easecation.bedrockloader.util.MolangExpressionEvaluator
 import java.lang.reflect.Type
 
 /**
@@ -157,6 +158,8 @@ data class AnimationDefinition(
         }
 
         companion object {
+            private val unsupportedMolangExpressions: MutableSet<String> = mutableSetOf()
+
             /**
              * 解析动画通道值
              */
@@ -197,14 +200,33 @@ data class AnimationDefinition(
 
             /**
              * 解析可能是Molang的数值
-             * 当前实现：尝试解析为数字，失败返回0并警告
-             * 未来扩展：实现完整Molang解析器
+             * 支持常见 math/query/variable 表达式，无法解析时回退为0。
              */
             private fun parseMolangValue(str: String): Double {
-                return str.toDoubleOrNull() ?: run {
-                    BedrockLoader.logger.warn("[AnimationDefinition] Molang not supported, treating as 0: $str")
-                    0.0
+                str.toDoubleOrNull()?.let { return it }
+
+                val numberVars = mapOf(
+                    "this" to 0.0,
+                    "query.life_time" to 0.0,
+                    "q.life_time" to 0.0,
+                    "query.anim_time" to 0.0,
+                    "q.anim_time" to 0.0,
+                    "query.target_x_rotation" to 0.0,
+                    "query.target_y_rotation" to 0.0,
+                    "query.body_y_rotation" to 0.0,
+                    "query.modified_distance_moved" to 0.0,
+                    "q.modified_distance_moved" to 0.0
+                )
+                val booleanVars = mapOf(
+                    "c.is_first_person" to false
+                )
+
+                MolangExpressionEvaluator.evaluate(str, numberVars, booleanVars)?.let { return it }
+
+                if (unsupportedMolangExpressions.add(str)) {
+                    BedrockLoader.logger.warn("[AnimationDefinition] Unsupported Molang expression, treating as 0: $str")
                 }
+                return 0.0
             }
 
             /**

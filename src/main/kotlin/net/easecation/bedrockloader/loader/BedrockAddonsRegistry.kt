@@ -2,12 +2,14 @@ package net.easecation.bedrockloader.loader
 
 import net.easecation.bedrockloader.bedrock.entity.components.EntityComponents
 import net.easecation.bedrockloader.bedrock.definition.EntityBehaviourDefinition
+import net.easecation.bedrockloader.bedrock.definition.SpawnRulesDefinition
 import net.easecation.bedrockloader.block.BlockContext
 import net.easecation.bedrockloader.block.entity.BlockEntityDataDriven
 import net.easecation.bedrockloader.entity.EntityDataDriven
 import net.minecraft.block.Block
 import net.minecraft.block.entity.BlockEntityType
 import net.minecraft.entity.EntityType
+import net.minecraft.entity.SpawnGroup
 import net.minecraft.item.BlockItem
 import net.minecraft.item.Item
 import net.minecraft.util.Identifier
@@ -19,6 +21,8 @@ object BedrockAddonsRegistry {
     val entities: MutableMap<Identifier, EntityType<EntityDataDriven>> = mutableMapOf()
     val entityComponents: MutableMap<Identifier, EntityComponents> = mutableMapOf()
     val entityBehaviours: MutableMap<Identifier, EntityBehaviourDefinition.EntityBehaviour> = mutableMapOf()
+    val entitySpawnRules: MutableMap<Identifier, SpawnRulesDefinition.SpawnRules> = mutableMapOf()
+    val entitySpawnGroups: MutableMap<Identifier, SpawnGroup> = mutableMapOf()
 
     // 物品到包的映射（用于按包分组创造模式选项卡）
     val itemToPackMapping: MutableMap<Identifier, String> = mutableMapOf()
