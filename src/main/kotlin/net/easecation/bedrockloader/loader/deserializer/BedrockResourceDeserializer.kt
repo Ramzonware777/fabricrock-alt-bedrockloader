@@ -2,12 +2,14 @@
 
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
+import com.google.gson.stream.JsonReader
 import net.easecation.bedrockloader.BedrockLoader
 import net.easecation.bedrockloader.bedrock.data.TextureImage
 import net.easecation.bedrockloader.bedrock.definition.*
 import net.easecation.bedrockloader.loader.context.BedrockResourceContext
 import net.easecation.bedrockloader.util.GsonUtil
 import net.easecation.bedrockloader.util.TargaReader
+import java.io.InputStream
 import java.io.InputStreamReader
 import java.util.zip.ZipFile
 import javax.imageio.ImageIO
@@ -85,6 +87,32 @@ object BedrockResourceDeserializer : PackDeserializer<BedrockResourceContext> {
         return result
     }
 
+    private fun parseJsonElement(stream: InputStream, name: String): JsonElement? {
+        return try {
+            InputStreamReader(stream).use { reader ->
+                val jsonReader = JsonReader(reader)
+                jsonReader.isLenient = true
+                val element: JsonElement? = GsonUtil.GSON.fromJson(jsonReader, JsonElement::class.java)
+                if (element == null) {
+                    BedrockLoader.logger.warn("Skipping empty JSON file: $name")
+                }
+                element
+            }
+        } catch (e: Exception) {
+            BedrockLoader.logger.warn("Skipping malformed JSON file: $name (${e.message})")
+            null
+        }
+    }
+
+    private fun parseJsonObject(stream: InputStream, name: String): JsonObject? {
+        val root = parseJsonElement(stream, name) ?: return null
+        if (!root.isJsonObject) {
+            BedrockLoader.logger.warn("Skipping JSON with non-object root: $name")
+            return null
+        }
+        return root.asJsonObject
+    }
+
     override fun deserialize(file: ZipFile): BedrockResourceContext {
         return deserialize(file, "")
     }
@@ -104,7 +132,8 @@ object BedrockResourceDeserializer : PackDeserializer<BedrockResourceContext> {
         getEntryWithPrefix("textures/terrain_texture.json")?.let { entry ->
             file.getInputStream(entry).use { stream ->
                 try {
-                    val terrainTextureDefinition = GsonUtil.GSON.fromJson(InputStreamReader(stream), TerrainTextureDefinition::class.java)
+                    val root = parseJsonObject(stream, entry.name) ?: return@use
+                    val terrainTextureDefinition = GsonUtil.GSON.fromJson(root, TerrainTextureDefinition::class.java)
                     context.terrainTexture.putAll(terrainTextureDefinition.texture_data)
                 } catch (e: Exception) {
                     BedrockLoader.logger.error("Error parsing terrain texture definition: ${entry.name}", e)
@@ -115,7 +144,8 @@ object BedrockResourceDeserializer : PackDeserializer<BedrockResourceContext> {
         getEntryWithPrefix("textures/item_texture.json")?.let { entry ->
             file.getInputStream(entry).use { stream ->
                 try {
-                    val itemTextureDefinition = GsonUtil.GSON.fromJson(InputStreamReader(stream), ItemTextureDefinition::class.java)
+                    val root = parseJsonObject(stream, entry.name) ?: return@use
+                    val itemTextureDefinition = GsonUtil.GSON.fromJson(root, ItemTextureDefinition::class.java)
                     context.itemTexture.putAll(itemTextureDefinition.texture_data)
                 } catch (e: Exception) {
                     BedrockLoader.logger.error("Error parsing item texture definition: ${entry.name}", e)
@@ -126,7 +156,8 @@ object BedrockResourceDeserializer : PackDeserializer<BedrockResourceContext> {
         getEntryWithPrefix("blocks.json")?.let { entry ->
             file.getInputStream(entry).use { stream ->
                 try {
-                    val blockResourceDefinition = GsonUtil.GSON.fromJson(InputStreamReader(stream), BlockResourceDefinition::class.java)
+                    val root = parseJsonObject(stream, entry.name) ?: return@use
+                    val blockResourceDefinition = GsonUtil.GSON.fromJson(root, BlockResourceDefinition::class.java)
                     context.blocks.putAll(blockResourceDefinition.blocks)
                 } catch (e: Exception) {
                     BedrockLoader.logger.error("Error parsing block resource definition: ${entry.name}", e)
@@ -148,7 +179,11 @@ object BedrockResourceDeserializer : PackDeserializer<BedrockResourceContext> {
                         "tga" -> TargaReader.read(file.getInputStream(entry))
                         else -> ImageIO.read(file.getInputStream(entry))
                     }
-                    context.textureImages[withoutExt] = TextureImage(image, ext)
+                    if (image == null) {
+                        BedrockLoader.logger.warn("Skipping texture with unsupported/invalid image data: $name")
+                    } else {
+                        context.textureImages[withoutExt] = TextureImage(image, ext)
+                    }
                 } catch (e: Exception) {
                     BedrockLoader.logger.error("Error parsing texture: $name", e)
                 }
@@ -157,7 +192,7 @@ object BedrockResourceDeserializer : PackDeserializer<BedrockResourceContext> {
             if (relativeName.endsWith(".geo.json") || (relativeName.startsWith("models/") && relativeName.endsWith(".json"))) {
                 file.getInputStream(entry).use { stream ->
                     try {
-                        val root = GsonUtil.GSON.fromJson(InputStreamReader(stream), JsonElement::class.java)
+                        val root = parseJsonElement(stream, name) ?: return@use
                         val models = parseGeometryModels(root, name)
                         if (models.isEmpty()) {
                             BedrockLoader.logger.warn("Skipping unsupported geometry format: $name")
@@ -175,12 +210,13 @@ object BedrockResourceDeserializer : PackDeserializer<BedrockResourceContext> {
             if (relativeName.startsWith("entity/") && relativeName.endsWith(".json")) {
                 file.getInputStream(entry).use { stream ->
                     try {
-                        val root = GsonUtil.GSON.fromJson(InputStreamReader(stream), JsonObject::class.java)
+                        val root = parseJsonObject(stream, name) ?: return@use
                         if (!root.has("minecraft:client_entity")) {
                             return@use
                         }
                         val entityResourceDefinition = GsonUtil.GSON.fromJson(root, EntityResourceDefinition::class.java)
-                        context.entities[entityResourceDefinition.clientEntity.description.identifier] = entityResourceDefinition.clientEntity
+                        val clientEntity = entityResourceDefinition?.clientEntity ?: return@use
+                        context.entities[clientEntity.description.identifier] = clientEntity
                     } catch (e: Exception) {
                         BedrockLoader.logger.error("Error parsing client entity: $name", e)
                     }
@@ -190,11 +226,15 @@ object BedrockResourceDeserializer : PackDeserializer<BedrockResourceContext> {
             if (relativeName.startsWith("render_controllers/") && relativeName.endsWith(".json")) {
                 file.getInputStream(entry).use { stream ->
                     try {
-                        val root = GsonUtil.GSON.fromJson(InputStreamReader(stream), JsonObject::class.java)
+                        val root = parseJsonObject(stream, name) ?: return@use
                         if (!root.has("render_controllers")) {
                             return@use
                         }
                         val renderControllerDefinition = GsonUtil.GSON.fromJson(root, EntityRenderControllerDefinition::class.java)
+                        if (renderControllerDefinition == null) {
+                            BedrockLoader.logger.warn("Skipping null render controller definition: $name")
+                            return@use
+                        }
                         context.renderControllers.putAll(renderControllerDefinition.renderControllers)
                     } catch (e: Exception) {
                         BedrockLoader.logger.error("Error parsing render controller: $name", e)
@@ -205,11 +245,15 @@ object BedrockResourceDeserializer : PackDeserializer<BedrockResourceContext> {
             if (relativeName.startsWith("animation_controllers/") && relativeName.endsWith(".json")) {
                 file.getInputStream(entry).use { stream ->
                     try {
-                        val root = GsonUtil.GSON.fromJson(InputStreamReader(stream), JsonObject::class.java)
+                        val root = parseJsonObject(stream, name) ?: return@use
                         if (!root.has("animation_controllers")) {
                             return@use
                         }
                         val definition = GsonUtil.GSON.fromJson(root, EntityAnimationControllerDefinition::class.java)
+                        if (definition == null) {
+                            BedrockLoader.logger.warn("Skipping null animation controller definition: $name")
+                            return@use
+                        }
                         context.animationControllers.putAll(definition.animationControllers)
                     } catch (e: Exception) {
                         BedrockLoader.logger.error("Error parsing animation controller: $name", e)
@@ -220,8 +264,14 @@ object BedrockResourceDeserializer : PackDeserializer<BedrockResourceContext> {
             if (relativeName.endsWith(".animation.json") || (relativeName.startsWith("animations/") && relativeName.endsWith(".json"))) {
                 file.getInputStream(entry).use { stream ->
                     try {
-                        val animationDefinition = GsonUtil.GSON.fromJson(InputStreamReader(stream), AnimationDefinition::class.java)
-                        context.animations.putAll(animationDefinition.animations)
+                        val root = parseJsonObject(stream, name) ?: return@use
+                        val animationDefinition = GsonUtil.GSON.fromJson(root, AnimationDefinition::class.java)
+                        val animations = animationDefinition?.animations
+                        if (animations == null) {
+                            BedrockLoader.logger.warn("Skipping null animation definition: $name")
+                            return@use
+                        }
+                        context.animations.putAll(animations)
                     } catch (e: Exception) {
                         BedrockLoader.logger.error("Error parsing animation: $name", e)
                     }
